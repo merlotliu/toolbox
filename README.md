@@ -28,6 +28,7 @@ A collection of personal command-line tools, organized so that a single
 ```
 toolbox/
 ├── setup          # install all tools (run this once after cloning)
+├── uninstall      # remove all tool symlinks from ~/.local/bin
 ├── <tool>/
 │   ├── <tool>     # main executable (must be chmod +x)
 │   └── setup      # optional: first-run initialization for this tool
@@ -52,6 +53,15 @@ source ~/.bashrc
 ```
 
 Open a new shell and all tools will be available directly by name.
+
+## Uninstalling
+
+```bash
+bash uninstall
+```
+
+Removes only the symlinks that `setup` created.  Tool directories and any
+configuration files under `~/.config` are left untouched.
 
 ## Adding a new tool
 

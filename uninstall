@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#
+# toolbox uninstall - remove all tool symlinks from ~/.local/bin
+#
+
+readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly BIN_DIR="$HOME/.local/bin"
+
+for tool_dir in "$REPO_DIR"/*/; do
+    [ -d "$tool_dir" ] || continue
+
+    tool_name="$(basename "$tool_dir")"
+    tool_script="$tool_dir/$tool_name"
+    link="$BIN_DIR/$tool_name"
+
+    if [ ! -x "$tool_script" ]; then
+        continue
+    fi
+
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$tool_script" ]; then
+        rm "$link"
+        echo "[$tool_name] removed $link"
+    fi
+done
