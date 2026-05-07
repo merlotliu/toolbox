@@ -1,0 +1,332 @@
+#!/bin/bash
+# apply-prebuilt-patch
+#
+# Apply a Qualcomm MST patch to the nhlos prebuilt directory.
+# Discovers all <variant>/<target> sub-directories under the patch root and
+# applies each one to the corresponding location under the destination root.
+#
+# Workflow:
+#   1. Extract <target>-binaries.tar in each dest variant dir
+#   2. Pre-apply MD5 comparison  – list files that differ or are new in the patch
+#   3. Copy changed/new patch files into dest   (skipped with --only-check)
+#   4. Post-apply MD5 comparison – confirm all patch files match dest
+#   5. Repack <target>-binaries.tar from dest sub-directories
+#   6. git add changed files + tar files
+#   7. git commit -s "[PATCH] update <target> libs"
+#
+# Usage:
+#   apply-prebuilt-patch -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only] [-y]
+#
+#   -s PATCH_ROOT   prebuilt_HY11 directory from the MST patch drop, e.g.
+#                   ~/Downloads/diff_.../ly.au.0.1.1/apps_proc/prebuilt_HY11
+#   -d DEST_ROOT    prebuilt_HY11 directory in the source tree (optional, has default)
+#                   default: /home/lixiang/Workspace/xref/W-8797-MASTER/nhlos/apps/apps_proc/prebuilt_HY11
+#   -t TARGET       component sub-directory name to match, e.g. adreno
+#
+#   --only-check / --check-only
+#                   Extract tar and run pre-apply MD5 check only; do not modify anything.
+#   -y / --yes      Skip the confirmation prompt before applying.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+DEFAULT_DEST_ROOT="/home/lixiang/Workspace/xref/W-8797-MASTER/nhlos/apps/apps_proc/prebuilt_HY11"
+
+PATCH_ROOT=""
+DEST_ROOT=""
+TARGET=""
+CHECK_ONLY=0
+YES=0
+
+usage() {
+    echo "Usage: $(basename "$0") -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only] [-y]" >&2
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s) PATCH_ROOT="$2"; shift 2 ;;
+        -d) DEST_ROOT="$2";  shift 2 ;;
+        -t) TARGET="$2";     shift 2 ;;
+        --only-check|--check-only) CHECK_ONLY=1; shift ;;
+        -y|--yes)  YES=1;  shift ;;
+        *) echo "Unknown option: $1" >&2; usage ;;
+    esac
+done
+
+DEST_ROOT="${DEST_ROOT:-$DEFAULT_DEST_ROOT}"
+[[ -z "$PATCH_ROOT" || -z "$TARGET" ]] && usage
+
+PATCH_ROOT="$(realpath "$PATCH_ROOT")"
+DEST_ROOT="$(realpath "$DEST_ROOT")"
+TAR_NAME="${TARGET}-binaries.tar"
+
+echo "Patch root : $PATCH_ROOT"
+echo "Dest root  : $DEST_ROOT"
+echo "Target     : $TARGET"
+echo "Tar name   : $TAR_NAME"
+echo
+
+# ---------------------------------------------------------------------------
+# Discover all <variant>/<target> directories in the patch root
+# ---------------------------------------------------------------------------
+mapfile -d '' PATCH_DIRS < <(find "$PATCH_ROOT" -mindepth 2 -maxdepth 2 \
+    -type d -name "$TARGET" -print0 | sort -z)
+
+if [[ ${#PATCH_DIRS[@]} -eq 0 ]]; then
+    echo "No '$TARGET' directories found under $PATCH_ROOT" >&2
+    exit 1
+fi
+
+echo "Found ${#PATCH_DIRS[@]} patch director(y/ies):"
+for pd in "${PATCH_DIRS[@]}"; do
+    echo "  ${pd#$PATCH_ROOT/}"
+done
+echo
+
+hr() { printf '%0.s-' {1..150}; echo; }
+
+# ---------------------------------------------------------------------------
+# Step 1: Extract <target>-binaries.tar in each dest variant dir
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 1: EXTRACT ${TAR_NAME}"
+echo "========================================"
+
+for PATCH_DIR in "${PATCH_DIRS[@]}"; do
+    variant_target="${PATCH_DIR#$PATCH_ROOT/}"
+    DEST_DIR="$DEST_ROOT/$variant_target"
+
+    if [[ ! -d "$DEST_DIR" ]]; then
+        echo "  WARN: dest dir not found, skipping: $DEST_DIR"
+        continue
+    fi
+
+    TAR_FILE="$DEST_DIR/$TAR_NAME"
+    if [[ ! -f "$TAR_FILE" ]]; then
+        echo "  WARN: $TAR_FILE not found, skipping extraction"
+        continue
+    fi
+
+    echo "  cd $DEST_DIR && tar -xjf $TAR_NAME"
+    (cd "$DEST_DIR" && tar -xjf "$TAR_NAME")
+done
+echo
+
+# ---------------------------------------------------------------------------
+# Step 2: Pre-apply MD5 comparison
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 2: PRE-APPLY CHECK"
+echo "========================================"
+echo "(showing only files that differ or are absent in dest)"
+echo
+
+printf "%-8s  %-60s  %-34s  %s\n" "STATUS" "File (relative to dest root)" "MD5 (patch)" "MD5 (dest)"
+hr
+
+TOTAL_DIFF=0
+TOTAL_NEW=0
+TOTAL_SAME=0
+
+declare -a CHANGED_PATCH=()
+declare -a CHANGED_DEST=()
+declare -a CHANGED_RELS=()
+
+for PATCH_DIR in "${PATCH_DIRS[@]}"; do
+    variant_target="${PATCH_DIR#$PATCH_ROOT/}"
+    DEST_DIR="$DEST_ROOT/$variant_target"
+
+    while IFS= read -r -d '' pfile; do
+        rel_in_target="${pfile#$PATCH_DIR/}"
+        rel="$variant_target/$rel_in_target"
+        dfile="$DEST_DIR/$rel_in_target"
+
+        patch_md5=$(md5sum "$pfile" | awk '{print $1}')
+
+        if [[ ! -e "$dfile" ]]; then
+            printf "%-8s  %-60s  %-34s  %s\n" "NEW" "$rel" "$patch_md5" "(absent)"
+            CHANGED_PATCH+=("$pfile")
+            CHANGED_DEST+=("$dfile")
+            CHANGED_RELS+=("$rel")
+            (( TOTAL_NEW++ )) || true
+            continue
+        fi
+
+        dest_md5=$(md5sum "$dfile" | awk '{print $1}')
+
+        if [[ "$patch_md5" == "$dest_md5" ]]; then
+            (( TOTAL_SAME++ )) || true
+        else
+            printf "%-8s  %-60s  %-34s  %s\n" "DIFF" "$rel" "$patch_md5" "$dest_md5"
+            CHANGED_PATCH+=("$pfile")
+            CHANGED_DEST+=("$dfile")
+            CHANGED_RELS+=("$rel")
+            (( TOTAL_DIFF++ )) || true
+        fi
+    done < <(find "$PATCH_DIR" -type f ! -name "$TAR_NAME" -print0 | sort -z)
+done
+
+hr
+TOTAL=$(( TOTAL_SAME + TOTAL_DIFF + TOTAL_NEW ))
+echo "  same=$TOTAL_SAME  diff=$TOTAL_DIFF  new=$TOTAL_NEW  total=$TOTAL"
+echo
+
+if [[ ${#CHANGED_RELS[@]} -eq 0 ]]; then
+    echo "No differences found. Patch is already applied."
+    exit 0
+fi
+
+echo "Files to be applied (${#CHANGED_RELS[@]}):"
+for rel in "${CHANGED_RELS[@]}"; do
+    echo "  $rel"
+done
+echo
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    echo "(--only-check: skipping apply, repack, and git commit)"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Confirmation
+# ---------------------------------------------------------------------------
+if [[ "$YES" -eq 0 ]]; then
+    read -r -p "Apply ${#CHANGED_RELS[@]} file(s) to '$DEST_ROOT'? [y/N] " REPLY
+    case "$REPLY" in
+        [yY][eE][sS]|[yY]) ;;
+        *) echo "Aborted."; exit 1 ;;
+    esac
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3: Copy changed/new files from patch to dest
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 3: APPLYING PATCH"
+echo "========================================"
+
+for i in "${!CHANGED_PATCH[@]}"; do
+    mkdir -p "$(dirname "${CHANGED_DEST[$i]}")"
+    cp "${CHANGED_PATCH[$i]}" "${CHANGED_DEST[$i]}"
+    echo "  cp  ${CHANGED_RELS[$i]}"
+done
+echo
+
+# ---------------------------------------------------------------------------
+# Step 4: Post-apply MD5 comparison
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 4: POST-APPLY CHECK"
+echo "========================================"
+echo "(verifying all patch files against dest)"
+echo
+
+printf "%-8s  %-60s  %-34s  %s\n" "STATUS" "File (relative to dest root)" "MD5 (patch)" "MD5 (dest)"
+hr
+
+PASS=0
+FAIL=0
+
+for PATCH_DIR in "${PATCH_DIRS[@]}"; do
+    variant_target="${PATCH_DIR#$PATCH_ROOT/}"
+    DEST_DIR="$DEST_ROOT/$variant_target"
+
+    while IFS= read -r -d '' pfile; do
+        rel_in_target="${pfile#$PATCH_DIR/}"
+        rel="$variant_target/$rel_in_target"
+        dfile="$DEST_DIR/$rel_in_target"
+
+        patch_md5=$(md5sum "$pfile" | awk '{print $1}')
+
+        if [[ ! -e "$dfile" ]]; then
+            printf "%-8s  %-60s  %-34s  %s\n" "FAIL" "$rel" "$patch_md5" "(absent)"
+            (( FAIL++ )) || true
+            continue
+        fi
+
+        dest_md5=$(md5sum "$dfile" | awk '{print $1}')
+
+        if [[ "$patch_md5" == "$dest_md5" ]]; then
+            printf "%-8s  %-60s  %-34s  %s\n" "OK" "$rel" "$patch_md5" "$dest_md5"
+            (( PASS++ )) || true
+        else
+            printf "%-8s  %-60s  %-34s  %s\n" "FAIL" "$rel" "$patch_md5" "$dest_md5"
+            (( FAIL++ )) || true
+        fi
+    done < <(find "$PATCH_DIR" -type f ! -name "$TAR_NAME" -print0 | sort -z)
+done
+
+hr
+echo "Result: $PASS OK, $FAIL FAILED  (total $TOTAL)"
+echo
+
+if [[ $FAIL -gt 0 ]]; then
+    echo "ERROR: post-apply check failed; aborting repack and git commit." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: Repack <target>-binaries.tar in each dest variant dir
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 5: REPACK ${TAR_NAME}"
+echo "========================================"
+
+declare -a TAR_FILES_ABS=()
+
+for PATCH_DIR in "${PATCH_DIRS[@]}"; do
+    variant_target="${PATCH_DIR#$PATCH_ROOT/}"
+    DEST_DIR="$DEST_ROOT/$variant_target"
+
+    mapfile -t TAR_DIRS < <(find "$DEST_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+    if [[ ${#TAR_DIRS[@]} -eq 0 ]]; then
+        echo "  WARN: no subdirectories found in $DEST_DIR, skipping repack"
+        continue
+    fi
+
+    echo "  cd $DEST_DIR && tar -cjf $TAR_NAME ${TAR_DIRS[*]}"
+    (cd "$DEST_DIR" && tar -cjf "$TAR_NAME" "${TAR_DIRS[@]}")
+    TAR_FILES_ABS+=("$DEST_DIR/$TAR_NAME")
+done
+echo
+
+# ---------------------------------------------------------------------------
+# Step 6: git add
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 6: GIT ADD"
+echo "========================================"
+
+GIT_ROOT="$(git -C "$DEST_ROOT" rev-parse --show-toplevel)"
+
+declare -a GIT_PATHS=()
+
+for i in "${!CHANGED_DEST[@]}"; do
+    GIT_PATHS+=("${CHANGED_DEST[$i]#$GIT_ROOT/}")
+done
+
+for tf in "${TAR_FILES_ABS[@]}"; do
+    GIT_PATHS+=("${tf#$GIT_ROOT/}")
+done
+
+for p in "${GIT_PATHS[@]}"; do
+    echo "  git add $p"
+done
+git -C "$GIT_ROOT" add "${GIT_PATHS[@]}"
+echo
+
+# ---------------------------------------------------------------------------
+# Step 7: git commit
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " STEP 7: GIT COMMIT"
+echo "========================================"
+
+COMMIT_MSG="[PATCH] update ${TARGET} libs"
+echo "  git commit -s -m \"$COMMIT_MSG\""
+git -C "$GIT_ROOT" commit -s -m "$COMMIT_MSG"
+echo
