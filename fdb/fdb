@@ -1,0 +1,278 @@
+#!/bin/bash
+
+#
+# FDB - Fast Download from Build
+#
+# Usage: fdb -d <URL> [-o <output_file>]
+#
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CONFIG_FILE="$HOME/.config/fdb/default.conf"
+
+USERNAME=""
+PASSWORD=""
+
+error_exit() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+show_usage() {
+    cat << EOF
+FDB - Fast Download from Build
+
+Usage: $(basename "$0") -d <URL> [-o <output_file>]
+
+OPTIONS:
+    -d URL      Download URL (required)
+    -o FILE     Output file path (default: auto-detected from URL)
+    -h          Show this help message
+
+EXAMPLES:
+    $(basename "$0") -d https://example.com/file.zip
+    $(basename "$0") -d https://example.com/file.zip -o /tmp/myfile.zip
+EOF
+}
+
+load_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error_exit "Config file not found: $CONFIG_FILE\nCreate it with:\n  LIAUTO_USERNAME=your_username\n  LIAUTO_PASSWORD=your_password"
+    fi
+
+    USERNAME=$(grep "LIAUTO_USERNAME=" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '\r')
+    PASSWORD=$(grep "LIAUTO_PASSWORD=" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '\r')
+
+    if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+        error_exit "Username or password not found in config file: $CONFIG_FILE"
+    fi
+}
+
+extract_filename() {
+    local url="$1"
+    local clean_url="${url%%\?*}"
+    local filename
+    filename=$(basename "$clean_url")
+    if [ -z "$filename" ] || [ "$filename" = "/" ]; then
+        filename="downloaded_file"
+    fi
+    echo "$filename"
+}
+
+# Parse an Artifactory download URL into base_url, repo_key, and repo_path.
+# Input:  https://host/artifactory/repo-key/some/path/
+# Output: three lines: base_url, repo_key, repo_path
+parse_artifactory_url() {
+    local url="$1"
+    # Strip trailing slash for uniform handling
+    url="${url%/}"
+    # Extract scheme + host  (everything up to /artifactory)
+    local base_url="${url%%/artifactory/*}/artifactory"
+    # Strip base_url prefix
+    local remainder="${url#$base_url/}"
+    local repo_key="${remainder%%/*}"
+    local repo_path="${remainder#*/}"
+    # If there's no sub-path, repo_path == remainder (no slash)
+    [ "$repo_path" = "$remainder" ] && repo_path=""
+    echo "$base_url"
+    echo "$repo_key"
+    echo "$repo_path"
+}
+
+# Fetch Artifactory storage API JSON for a given path within a repo
+fetch_storage_json() {
+    local base_url="$1"
+    local repo_key="$2"
+    local path="$3"
+    local storage_url
+    if [ -n "$path" ]; then
+        storage_url="${base_url}/api/storage/${repo_key}/${path}"
+    else
+        storage_url="${base_url}/api/storage/${repo_key}"
+    fi
+    curl -s --fail -u "$USERNAME:$PASSWORD" "$storage_url"
+}
+
+# Interactive directory browser for an Artifactory URL.
+# Resolves to a file URL, then downloads it.
+browse_and_download() {
+    local base_url="$1"
+    local repo_key="$2"
+    local current_path="$3"
+    local output_file="$4"
+    local path_history=()
+
+    while true; do
+        echo ""
+        if [ -n "$current_path" ]; then
+            echo "Location: /${repo_key}/${current_path}/"
+        else
+            echo "Location: /${repo_key}/"
+        fi
+        echo ""
+
+        local json
+        json=$(fetch_storage_json "$base_url" "$repo_key" "$current_path")
+        if [ $? -ne 0 ] || [ -z "$json" ]; then
+            error_exit "Failed to fetch directory listing"
+        fi
+
+        local folders files
+        folders=$(echo "$json" | jq -r '.children[]? | select(.folder == true) | .uri' | sed 's/^\///')
+        files=$(echo "$json"   | jq -r '.children[]? | select(.folder == false) | .uri' | sed 's/^\///')
+
+        local -a items=()
+        local counter=1
+
+        if [ -n "$current_path" ]; then
+            echo "  0) .. (go back)"
+            items[0]=".."
+        fi
+
+        if [ -n "$folders" ]; then
+            echo "Folders:"
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                printf "  %2d) %s/\n" "$counter" "$f"
+                items[$counter]="$f"
+                (( counter++ ))
+            done <<< "$folders"
+        fi
+
+        if [ -n "$files" ]; then
+            echo "Files:"
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                printf "  %2d) %s\n" "$counter" "$f"
+                items[$counter]="$f"
+                (( counter++ ))
+            done <<< "$files"
+        fi
+
+        echo ""
+        echo "  q) Quit"
+        echo ""
+        read -rp "Select: " choice
+
+        case "$choice" in
+            q|Q)
+                echo "Aborted."
+                exit 0
+                ;;
+            *)
+                if [[ "$choice" =~ ^[0-9]+$ ]] && [ -n "${items[$choice]+x}" ]; then
+                    local selected="${items[$choice]}"
+
+                    if [ "$selected" = ".." ]; then
+                        if [ ${#path_history[@]} -gt 0 ]; then
+                            current_path="${path_history[-1]}"
+                            unset 'path_history[-1]'
+                        else
+                            current_path=""
+                        fi
+                        continue
+                    fi
+
+                    local is_folder
+                    is_folder=$(echo "$json" | jq -r --arg name "/$selected" '.children[]? | select(.uri == $name) | .folder')
+
+                    if [ "$is_folder" = "true" ]; then
+                        path_history+=("$current_path")
+                        if [ -n "$current_path" ]; then
+                            current_path="${current_path}/${selected}"
+                        else
+                            current_path="$selected"
+                        fi
+                    else
+                        local file_path
+                        if [ -n "$current_path" ]; then
+                            file_path="${current_path}/${selected}"
+                        else
+                            file_path="$selected"
+                        fi
+                        local file_url="${base_url}/${repo_key}/${file_path}"
+                        if [ -z "$output_file" ]; then
+                            output_file="$selected"
+                        fi
+                        echo ""
+                        download_file "$file_url" "$output_file"
+                        exit 0
+                    fi
+                else
+                    echo "Invalid selection."
+                fi
+                ;;
+        esac
+    done
+}
+
+download_file() {
+    local url="$1"
+    local output_file="$2"
+
+    if [ -f "$output_file" ]; then
+        local existing_size
+        existing_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo "?")
+        read -rp "File already exists: $output_file (${existing_size} bytes). Re-download? [y/N] " confirm
+        case "$confirm" in
+            y|Y) rm -f "$output_file" ;;
+            *) echo "Skipped."; return 0 ;;
+        esac
+    fi
+
+    echo "Info: Downloading..."
+    echo "Info: Source: $url"
+    echo "Info: Destination: $output_file"
+
+    curl -L \
+         --fail \
+         --show-error \
+         --progress-bar \
+         -u "$USERNAME:$PASSWORD" \
+         -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+         -o "$output_file" \
+         "$url"
+
+    local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        local file_size
+        file_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo "unknown")
+        echo "Info: Download completed successfully!"
+        echo "Info: Output: $output_file ($file_size bytes)"
+    else
+        error_exit "Download failed with exit code: $exit_code"
+    fi
+}
+
+# Parse arguments
+URL=""
+OUTPUT_FILE=""
+
+while getopts "d:o:h" opt; do
+    case $opt in
+        d) URL="$OPTARG" ;;
+        o) OUTPUT_FILE="$OPTARG" ;;
+        h) show_usage; exit 0 ;;
+        \?) error_exit "Invalid option: -$OPTARG. Use -h for help." ;;
+    esac
+done
+
+if [ -z "$URL" ]; then
+    show_usage
+    exit 1
+fi
+
+load_config
+
+# If the URL ends with '/', treat it as an Artifactory directory listing
+if [[ "$URL" == */ ]]; then
+    parsed=$(parse_artifactory_url "$URL")
+    base_url=$(sed -n '1p' <<< "$parsed")
+    repo_key=$(sed -n '2p' <<< "$parsed")
+    repo_path=$(sed -n '3p' <<< "$parsed")
+    browse_and_download "$base_url" "$repo_key" "$repo_path" "$OUTPUT_FILE"
+else
+    if [ -z "$OUTPUT_FILE" ]; then
+        OUTPUT_FILE="$(extract_filename "$URL")"
+    fi
+    download_file "$URL" "$OUTPUT_FILE"
+fi
