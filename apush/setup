@@ -1,0 +1,9 @@
+#!/bin/bash
+
+#
+# apush setup - initialize apush configuration
+#
+
+echo "[apush] setup: nothing to configure."
+echo "[apush] Create an apush.conf in your project directory to get started."
+echo "        See 'apush -h' for usage."

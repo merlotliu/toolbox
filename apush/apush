@@ -1,0 +1,169 @@
+#!/bin/bash
+set -e
+
+#
+# apush - push Android build artifacts to a device via adb
+#
+# Reads an INI-style config file (apush.conf) that maps named sections
+# to lists of local-file -> remote-path pairs, then pushes them in bulk.
+#
+# Usage: apush [-s serial] [-l] [-L section] section1 [section2 ...]
+#
+
+CONFIG_FILE="apush.conf"
+ADB="adb"
+
+usage() {
+    cat << EOF
+apush - push Android build artifacts to a device via adb
+
+Usage: $(basename "$0") [-s serial] [-l] [-L section] section1 [section2 ...]
+
+Options:
+    -s serial   specify adb device serial
+    -l          list all sections in the config file
+    -L section  list files in a section without pushing
+    -h          show this help message
+
+Environment:
+    APUSH_BASE_PATH   root directory of the build output (required for push)
+
+Examples:
+    $(basename "$0") libgui surfaceflinger
+    $(basename "$0") -s emulator-5554 libgui
+    $(basename "$0") -l
+    $(basename "$0") -L libgui
+EOF
+    exit 1
+}
+
+# ---------- argument parsing ----------
+DEVICE_SERIAL=""
+LIST_MODE=0
+LIST_SECTION=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s)
+            shift
+            if [[ -z "$1" ]]; then
+                echo "Error: -s requires a device serial" >&2
+                usage
+            fi
+            DEVICE_SERIAL="$1"
+            shift
+            ;;
+        -l)
+            LIST_MODE=1
+            shift
+            ;;
+        -L)
+            shift
+            if [[ -z "$1" ]]; then
+                echo "Error: -L requires a section name" >&2
+                usage
+            fi
+            LIST_SECTION="$1"
+            shift
+            ;;
+        -h)
+            usage
+            ;;
+        -*)
+            echo "Error: unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# ---------- -l mode: list sections ----------
+if [ $LIST_MODE -eq 1 ]; then
+    echo "Sections in $CONFIG_FILE:"
+    grep -E '^\[.*\]$' "$CONFIG_FILE" | sed 's/^\[\(.*\)\]$/  \1/'
+    exit 0
+fi
+
+# ---------- -L mode: list files in a section ----------
+if [ -n "$LIST_SECTION" ]; then
+    echo "Files in [$LIST_SECTION]:"
+    inside=0
+    while IFS= read -r line; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        if [[ $line =~ ^\[$LIST_SECTION\]$ ]]; then
+            inside=1; continue
+        fi
+        if [[ $inside -eq 1 && $line =~ ^\[.*\]$ ]]; then
+            inside=0
+        fi
+        if [ $inside -eq 1 ]; then
+            local_rel=$(echo "$line" | awk '{print $1}')
+            remote_path=$(echo "$line" | awk '{print $2}')
+            echo "  ${APUSH_BASE_PATH:-\$APUSH_BASE_PATH}/$local_rel -> $remote_path"
+        fi
+    done < "$CONFIG_FILE"
+    exit 0
+fi
+
+# ---------- push mode ----------
+if [ -z "$APUSH_BASE_PATH" ]; then
+    echo "Error: APUSH_BASE_PATH is not set. Example:" >&2
+    echo "  export APUSH_BASE_PATH=/path/to/out/target/product/<device>" >&2
+    exit 1
+fi
+
+if [ $# -lt 1 ]; then
+    usage
+fi
+
+# resolve adb device
+if [ -n "$DEVICE_SERIAL" ]; then
+    ADB="adb -s $DEVICE_SERIAL"
+else
+    device_count=$(adb devices | awk 'NR>1 && $2=="device" {print $1}' | wc -l)
+    if [ "$device_count" -eq 0 ]; then
+        echo "Error: no adb device detected" >&2
+        exit 1
+    elif [ "$device_count" -gt 1 ]; then
+        echo "Multiple devices detected, please select:"
+        select choice in $(adb devices | awk 'NR>1 && $2=="device" {print $1}'); do
+            if [ -n "$choice" ]; then
+                DEVICE_SERIAL="$choice"
+                ADB="adb -s $DEVICE_SERIAL"
+                break
+            fi
+        done
+    fi
+fi
+
+# push each requested section
+for section in "$@"; do
+    echo "==> [$section]"
+    inside=0
+    while IFS= read -r line; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        if [[ $line =~ ^\[$section\]$ ]]; then
+            inside=1; continue
+        fi
+        if [[ $inside -eq 1 && $line =~ ^\[.*\]$ ]]; then
+            inside=0
+        fi
+        if [ $inside -eq 1 ]; then
+            local_rel=$(echo "$line" | awk '{print $1}')
+            remote_path=$(echo "$line" | awk '{print $2}')
+            local_path="$APUSH_BASE_PATH/$local_rel"
+            if [ ! -e "$local_path" ]; then
+                echo "  [skip] not found: $local_path"
+                continue
+            fi
+            echo "  $local_path -> $remote_path"
+            $ADB push "$local_path" "$remote_path" >/dev/null
+        fi
+    done < "$CONFIG_FILE"
+done
+
+echo "Done."
