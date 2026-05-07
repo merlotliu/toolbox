@@ -1,0 +1,43 @@
+#!/bin/bash
+
+#
+# toolbox setup - install all tools and run per-tool initialization
+#
+# This script:
+#   1. Creates symlinks in ~/.local/bin for each tool's main executable
+#   2. Runs each tool's own setup script (if present)
+#   3. Reminds you to add ~/.local/bin to PATH if it's not already there
+#
+
+readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly BIN_DIR="$HOME/.local/bin"
+
+mkdir -p "$BIN_DIR"
+
+for tool_dir in "$REPO_DIR"/*/; do
+    [ -d "$tool_dir" ] || continue
+
+    tool_name="$(basename "$tool_dir")"
+    tool_script="$tool_dir/$tool_name"
+
+    if [ ! -x "$tool_script" ]; then
+        continue
+    fi
+
+    ln -sf "$tool_script" "$BIN_DIR/$tool_name"
+    echo "[$tool_name] linked -> $BIN_DIR/$tool_name"
+
+    if [ -x "$tool_dir/setup" ]; then
+        echo "[$tool_name] running setup..."
+        "$tool_dir/setup"
+    fi
+done
+
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    echo ""
+    echo "Note: $BIN_DIR is not in your PATH."
+    echo "Add the following line to your shell profile (~/.bashrc or ~/.zshrc):"
+    echo ""
+    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo ""
+fi
