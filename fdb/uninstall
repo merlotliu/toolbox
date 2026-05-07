@@ -1,0 +1,28 @@
+#!/bin/bash
+
+#
+# fdb uninstall - remove fdb configuration
+#
+
+CONFIG_FILE="$HOME/.config/fdb/default.conf"
+CONFIG_DIR="$(dirname "$CONFIG_FILE")"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "  No config found, nothing to remove."
+    exit 0
+fi
+
+read -rp "  Remove $CONFIG_FILE? [y/N] " confirm
+case "$confirm" in
+    y|Y) ;;
+    *) echo "  Skipped."; exit 0 ;;
+esac
+
+rm -f "$CONFIG_FILE"
+echo "  Removed: $CONFIG_FILE"
+
+# Remove the config directory only if it is now empty
+if [ -d "$CONFIG_DIR" ] && [ -z "$(ls -A "$CONFIG_DIR")" ]; then
+    rmdir "$CONFIG_DIR"
+    echo "  Removed: $CONFIG_DIR"
+fi

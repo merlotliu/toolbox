@@ -1,0 +1,32 @@
+#!/bin/bash
+
+#
+# fdb setup - initialize fdb configuration
+#
+
+CONFIG_FILE="$HOME/.config/fdb/default.conf"
+
+if [ -f "$CONFIG_FILE" ]; then
+    read -rp "  Config already exists: $CONFIG_FILE. Overwrite? [y/N] " confirm
+    case "$confirm" in
+        y|Y) ;;
+        *) echo "  Skipped."; exit 0 ;;
+    esac
+fi
+
+read -rp "  Artifactory username: " username
+read -rsp "  Artifactory password: " password
+echo ""
+
+if [ -z "$username" ] || [ -z "$password" ]; then
+    echo "  Error: username and password cannot be empty." >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+cat > "$CONFIG_FILE" << EOF
+LIAUTO_USERNAME=$username
+LIAUTO_PASSWORD=$password
+EOF
+chmod 600 "$CONFIG_FILE"
+echo "  Config saved: $CONFIG_FILE"
