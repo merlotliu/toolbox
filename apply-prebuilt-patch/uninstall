@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# apply-prebuilt-patch uninstall - nothing to remove
+#
+
+echo "[apply-prebuilt-patch] uninstall: nothing to remove."
