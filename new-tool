@@ -1,0 +1,124 @@
+#!/bin/bash
+
+#
+# new-tool - scaffold a new tool in the toolbox repository
+#
+# Usage: new-tool <tool-name>
+#
+
+set -e
+
+readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+    echo "Usage: $(basename "$0") <tool-name>"
+    echo ""
+    echo "Creates the following scaffold under <tool-name>/:"
+    echo "  <tool-name>/<tool-name>   main executable"
+    echo "  <tool-name>/setup         setup script"
+    echo "  <tool-name>/uninstall     uninstall script"
+    echo "  <tool-name>/README.md     documentation"
+    exit 1
+}
+
+[ $# -ne 1 ] && usage
+
+TOOL_NAME="$1"
+TOOL_DIR="$REPO_DIR/$TOOL_NAME"
+
+if [ -e "$TOOL_DIR" ]; then
+    echo "Error: '$TOOL_DIR' already exists." >&2
+    exit 1
+fi
+
+mkdir -p "$TOOL_DIR"
+
+# Main executable
+cat > "$TOOL_DIR/$TOOL_NAME" << EOF
+#!/bin/bash
+
+#
+# $TOOL_NAME - <short description>
+#
+
+show_usage() {
+    cat << USAGE
+$TOOL_NAME - <short description>
+
+Usage: \$(basename "\$0") [OPTIONS]
+
+OPTIONS:
+    -h    Show this help message
+
+EXAMPLES:
+    \$(basename "\$0")
+USAGE
+}
+
+while getopts "h" opt; do
+    case \$opt in
+        h) show_usage; exit 0 ;;
+        \?) echo "Error: Invalid option: -\$OPTARG. Use -h for help." >&2; exit 1 ;;
+    esac
+done
+
+echo "$TOOL_NAME: not yet implemented"
+EOF
+chmod +x "$TOOL_DIR/$TOOL_NAME"
+
+# setup script
+cat > "$TOOL_DIR/setup" << EOF
+#!/bin/bash
+
+#
+# $TOOL_NAME setup - initialize $TOOL_NAME configuration
+#
+
+echo "[$TOOL_NAME] setup: nothing to configure."
+EOF
+chmod +x "$TOOL_DIR/setup"
+
+# uninstall script
+cat > "$TOOL_DIR/uninstall" << EOF
+#!/bin/bash
+
+#
+# $TOOL_NAME uninstall - remove $TOOL_NAME configuration
+#
+
+echo "[$TOOL_NAME] uninstall: nothing to remove."
+EOF
+chmod +x "$TOOL_DIR/uninstall"
+
+# README
+cat > "$TOOL_DIR/README.md" << EOF
+# $TOOL_NAME
+
+> TODO: short description
+
+## Usage
+
+\`\`\`
+$TOOL_NAME [OPTIONS]
+\`\`\`
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| \`-h\`  | Show help   |
+
+## Examples
+
+\`\`\`bash
+$TOOL_NAME
+\`\`\`
+EOF
+
+echo "Created tool scaffold:"
+find "$TOOL_DIR" | sort | sed "s|$REPO_DIR/||"
+echo ""
+echo "Next steps:"
+echo "  1. Edit $TOOL_NAME/$TOOL_NAME to implement the tool"
+echo "  2. Edit $TOOL_NAME/setup / uninstall if the tool needs config"
+echo "  3. Run ./setup from the repo root to link it into ~/.local/bin"

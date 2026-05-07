@@ -29,10 +29,12 @@ A collection of personal command-line tools, organized so that a single
 toolbox/
 ├── setup          # install all tools (run this once after cloning)
 ├── uninstall      # remove all tool symlinks from ~/.local/bin
+├── new-tool       # scaffold a new tool directory (see below)
 ├── <tool>/
 │   ├── <tool>     # main executable (must be chmod +x)
 │   ├── setup      # optional: first-run initialization for this tool
-│   └── uninstall  # optional: cleanup when uninstalling this tool
+│   ├── uninstall  # optional: cleanup when uninstalling this tool
+│   └── README.md  # optional: tool-specific documentation
 └── ...
 ```
 
@@ -67,6 +69,18 @@ its own resources (e.g. config files).  Tool directories inside the repo
 are left untouched.
 
 ## Adding a new tool
+
+Use the included `new-tool` script to scaffold the full directory structure:
+
+```bash
+./new-tool <tool-name>
+```
+
+This creates `<tool-name>/` with the main executable, `setup`, `uninstall`, and
+`README.md` pre-populated and ready to edit.  Then run `bash setup` from the
+repo root to link the new tool into `~/.local/bin`.
+
+To add a tool manually instead:
 
 1. Create a directory named after the tool: `mkdir mytool`
 2. Place the executable at `mytool/mytool` and make it executable:
