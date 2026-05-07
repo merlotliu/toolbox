@@ -1,13 +1,13 @@
 #!/bin/bash
 
 #
-# FDB - Fast Download from Build
+# dbfetch - Daily Build Fetch
 #
-# Usage: fdb -d <URL> [-o <output_file>]
+# Usage: dbfetch -d <URL> [-o <output_file>]
 #
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly CONFIG_FILE="$HOME/.config/fdb/default.conf"
+readonly CONFIG_FILE="$HOME/.config/dbfetch/default.conf"
 
 USERNAME=""
 PASSWORD=""
@@ -19,7 +19,7 @@ error_exit() {
 
 show_usage() {
     cat << EOF
-FDB - Fast Download from Build
+dbfetch - Daily Build Fetch
 
 Usage: $(basename "$0") -d <URL> [-o <output_file>]
 

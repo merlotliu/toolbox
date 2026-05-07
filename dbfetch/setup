@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #
-# fdb setup - initialize fdb configuration
+# dbfetch setup - initialize dbfetch configuration
 #
 
-CONFIG_FILE="$HOME/.config/fdb/default.conf"
+CONFIG_FILE="$HOME/.config/dbfetch/default.conf"
 
 if [ -f "$CONFIG_FILE" ]; then
     read -rp "  Config already exists: $CONFIG_FILE. Overwrite? [y/N] " confirm

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #
-# fdb uninstall - remove fdb configuration
+# dbfetch uninstall - remove dbfetch configuration
 #
 
-CONFIG_FILE="$HOME/.config/fdb/default.conf"
+CONFIG_FILE="$HOME/.config/dbfetch/default.conf"
 CONFIG_DIR="$(dirname "$CONFIG_FILE")"
 
 if [ ! -f "$CONFIG_FILE" ]; then
