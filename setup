@@ -8,9 +8,20 @@
 #   2. Runs each tool's own setup script (if present)
 #   3. Reminds you to add ~/.local/bin to PATH if it's not already there
 #
+# Options:
+#   --check   prompt before running each tool's setup script
+#
 
 readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly BIN_DIR="$HOME/.local/bin"
+
+CHECK=0
+for arg in "$@"; do
+    case "$arg" in
+        --check) CHECK=1 ;;
+        *) echo "Error: unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
 
 mkdir -p "$BIN_DIR"
 
@@ -28,6 +39,13 @@ for tool_dir in "$REPO_DIR"/*/; do
     echo "[$tool_name] linked -> $BIN_DIR/$tool_name"
 
     if [ -x "$tool_dir/setup" ]; then
+        if [ $CHECK -eq 1 ]; then
+            read -rp "[$tool_name] run setup? [y/N] " confirm
+            case "$confirm" in
+                y|Y) ;;
+                *) echo "[$tool_name] setup skipped."; continue ;;
+            esac
+        fi
         echo "[$tool_name] running setup..."
         "$tool_dir/setup"
     fi
