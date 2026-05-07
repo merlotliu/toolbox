@@ -15,7 +15,7 @@
 #   7. git commit -s "[PATCH] update <target> libs"
 #
 # Usage:
-#   apply-prebuilt-patch -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only] [-y]
+#   apply-prebuilt-patch -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only|--only-check-tar] [-y]
 #
 #   -s PATCH_ROOT   prebuilt_HY11 directory from the MST patch drop, e.g.
 #                   ~/Downloads/diff_.../ly.au.0.1.1/apps_proc/prebuilt_HY11
@@ -25,6 +25,8 @@
 #
 #   --only-check / --check-only
 #                   Extract tar and run pre-apply MD5 check only; do not modify anything.
+#   --only-check-tar
+#                   Compare MD5 of <target>-binaries.tar between patch and dest only; do not extract or modify anything.
 #   -y / --yes      Skip the confirmation prompt before applying.
 
 set -euo pipefail
@@ -38,10 +40,11 @@ PATCH_ROOT=""
 DEST_ROOT=""
 TARGET=""
 CHECK_ONLY=0
+CHECK_TAR_ONLY=0
 YES=0
 
 usage() {
-    echo "Usage: $(basename "$0") -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only] [-y]" >&2
+    echo "Usage: $(basename "$0") -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only|--only-check-tar] [-y]" >&2
     exit 1
 }
 
@@ -51,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         -d) DEST_ROOT="$2";  shift 2 ;;
         -t) TARGET="$2";     shift 2 ;;
         --only-check|--check-only) CHECK_ONLY=1; shift ;;
+        --only-check-tar) CHECK_TAR_ONLY=1; shift ;;
         -y|--yes)  YES=1;  shift ;;
         *) echo "Unknown option: $1" >&2; usage ;;
     esac
@@ -87,6 +91,43 @@ done
 echo
 
 hr() { printf '%0.s-' {1..150}; echo; }
+
+# ---------------------------------------------------------------------------
+# --only-check-tar mode: compare MD5 of the tar files only, then exit
+# ---------------------------------------------------------------------------
+if [[ $CHECK_TAR_ONLY -eq 1 ]]; then
+    echo "========================================"
+    echo " TAR MD5 CHECK (${TAR_NAME})"
+    echo "========================================"
+    printf "%-8s  %-60s  %-34s  %s\n" "STATUS" "Variant" "MD5 (patch)" "MD5 (dest)"
+    hr
+    for PATCH_DIR in "${PATCH_DIRS[@]}"; do
+        variant_target="${PATCH_DIR#$PATCH_ROOT/}"
+        DEST_DIR="$DEST_ROOT/$variant_target"
+        patch_tar="$PATCH_DIR/$TAR_NAME"
+        dest_tar="$DEST_DIR/$TAR_NAME"
+
+        if [[ ! -f "$patch_tar" ]]; then
+            printf "%-8s  %-60s  %-34s  %s\n" "SKIP" "$variant_target" "(absent in patch)" ""
+            continue
+        fi
+        patch_md5=$(md5sum "$patch_tar" | awk '{print $1}')
+
+        if [[ ! -f "$dest_tar" ]]; then
+            printf "%-8s  %-60s  %-34s  %s\n" "NEW" "$variant_target" "$patch_md5" "(absent in dest)"
+            continue
+        fi
+        dest_md5=$(md5sum "$dest_tar" | awk '{print $1}')
+
+        if [[ "$patch_md5" == "$dest_md5" ]]; then
+            printf "%-8s  %-60s  %-34s  %s\n" "SAME" "$variant_target" "$patch_md5" "$dest_md5"
+        else
+            printf "%-8s  %-60s  %-34s  %s\n" "DIFF" "$variant_target" "$patch_md5" "$dest_md5"
+        fi
+    done
+    hr
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: Extract <target>-binaries.tar in patch dir (if present) and dest dir
