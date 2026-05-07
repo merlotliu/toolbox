@@ -6,12 +6,64 @@
 #   <relative-local-path>    <absolute-remote-path>
 #
 # The local path is relative to $APUSH_BASE_PATH.
-#
-# Example:
-#
-# [surfaceflinger]
-# system/bin/surfaceflinger              /system/bin/surfaceflinger
-# system/lib64/libgui.so                 /system/lib64/libgui.so
-#
-# [gralloc]
-# vendor/lib64/hw/gralloc.default.so     /vendor/lib64/hw/gralloc.default.so
+
+[getfps]
+system/bin/getfps /system/bin/fpstest
+
+[libui]
+system/lib/libui.so /system/lib/
+system/lib64/libui.so /system/lib64/
+
+[libgui]
+system/lib/libgui.so /system/lib/
+system/lib64/libgui.so /system/lib64/
+
+[surfaceflinger]
+system/bin/surfaceflinger /system/bin/
+
+[libsurfaceflinger]
+system/lib/libsurfaceflinger.so /system/lib/
+system/lib64/libsurfaceflinger.so /system/lib64/
+
+[libSurfaceFlingerProp]
+system/lib64/libSurfaceFlingerProp.so /system/lib64/
+
+[libandroid_runtime]
+system/lib64/libandroid_runtime.so /system/lib64/
+system/lib/libandroid_runtime.so /system/lib/
+
+[libnativedisplay]
+system/lib64/libnativedisplay.so /system/lib64/
+system/lib/libnativedisplay.so /system/lib/
+
+[framework]
+system/framework/framework.jar /system/framework/
+
+[libcameraservice]
+system/lib64/libcameraservice.so /system/lib64/
+system/lib/libcameraservice.so /system/lib/
+
+[cpu_monitor]
+system/bin/cpu_monitor /system/bin/
+system/etc/init/cpu_monitor.rc /system/etc/init/
+
+[selinux_qssi]
+system/etc/selinux /system/etc/
+system_ext/etc/selinux/ /system_ext/etc/
+product/etc/selinux/ /product/etc/
+
+[selinux]
+system/etc/selinux /system/etc/
+system/system_ext/etc/selinux/ /system/system_ext/etc/
+vendor/etc/selinux /vendor/etc
+early_services/vendor/etc/selinux /early_services/vendor/etc
+
+[libhwui]
+system/lib/libhwui.so /system/lib/
+system/lib64/libhwui.so /system/lib64/
+
+[sysprofiler]
+system/bin/sysprofiler /system/bin/
+
+[chj_monitor]
+vendor/bin/chj_monitor /vendor/bin/
