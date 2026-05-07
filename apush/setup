@@ -4,6 +4,16 @@
 # apush setup - initialize apush configuration
 #
 
-echo "[apush] setup: nothing to configure."
-echo "[apush] Create an apush.conf in your project directory to get started."
-echo "        See 'apush -h' for usage."
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CONFIG_FILE="$HOME/.config/apush/apush.conf"
+readonly TEMPLATE="$SCRIPT_DIR/apush.conf.template"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "[apush] config already exists: $CONFIG_FILE"
+    exit 0
+fi
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+cp "$TEMPLATE" "$CONFIG_FILE"
+echo "[apush] config created: $CONFIG_FILE"
+echo "[apush] Edit it to add your sections, then set APUSH_BASE_PATH."

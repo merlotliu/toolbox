@@ -1,0 +1,17 @@
+# apush.conf - batch adb push configuration
+#
+# Each [section] groups files for one logical component.
+# Each line inside a section is:
+#
+#   <relative-local-path>    <absolute-remote-path>
+#
+# The local path is relative to $APUSH_BASE_PATH.
+#
+# Example:
+#
+# [surfaceflinger]
+# system/bin/surfaceflinger              /system/bin/surfaceflinger
+# system/lib64/libgui.so                 /system/lib64/libgui.so
+#
+# [gralloc]
+# vendor/lib64/hw/gralloc.default.so     /vendor/lib64/hw/gralloc.default.so

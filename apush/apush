@@ -10,7 +10,7 @@ set -e
 # Usage: apush [-s serial] [-l] [-L section] section1 [section2 ...]
 #
 
-CONFIG_FILE="apush.conf"
+CONFIG_FILE="$HOME/.config/apush/apush.conf"
 ADB="adb"
 
 usage() {
@@ -78,6 +78,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ---------- check config exists ----------
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: config file not found: $CONFIG_FILE" >&2
+    echo "Run 'apush setup' or: bash $(dirname "$(readlink -f "$0")")/setup" >&2
+    exit 1
+fi
 
 # ---------- -l mode: list sections ----------
 if [ $LIST_MODE -eq 1 ]; then

@@ -25,9 +25,13 @@ apush [-s serial] [-l] [-L section] section1 [section2 ...]
 |------------------|------------------------------------------------------|
 | `APUSH_BASE_PATH`| Root of the build output (required for push mode)    |
 
-## Config file format
+## Config file
 
-`apush.conf` uses a simple INI format.  Each section groups the files that
+The config is stored at `~/.config/apush/apush.conf` and is created
+automatically from the bundled template when you run `./setup` from the
+repo root.  Edit it to add your own sections.
+
+The format is a simple INI style.  Each section groups the files that
 belong to one logical component.  Each line inside a section is:
 
 ```

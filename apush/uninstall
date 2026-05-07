@@ -4,4 +4,18 @@
 # apush uninstall - remove apush configuration
 #
 
-echo "[apush] uninstall: nothing to remove."
+readonly CONFIG_DIR="$HOME/.config/apush"
+
+if [ ! -d "$CONFIG_DIR" ]; then
+    echo "[apush] nothing to remove."
+    exit 0
+fi
+
+read -rp "[apush] Remove $CONFIG_DIR? [y/N] " confirm
+case "$confirm" in
+    y|Y) ;;
+    *) echo "[apush] skipped."; exit 0 ;;
+esac
+
+rm -rf "$CONFIG_DIR"
+echo "[apush] removed: $CONFIG_DIR"
