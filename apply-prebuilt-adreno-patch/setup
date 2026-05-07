@@ -1,0 +1,8 @@
+#!/bin/bash
+
+#
+# apply-prebuilt-adreno-patch setup - initialize apply-prebuilt-adreno-patch configuration
+#
+
+echo "[apply-prebuilt-adreno-patch] setup: nothing to configure."
+

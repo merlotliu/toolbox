@@ -1,0 +1,270 @@
+#!/bin/bash
+# apply-prebuilt-adreno-patch
+#
+# Reorganise a Qualcomm auto-a7xbins source layout into the nhlos prebuilt
+# adreno directory structure.
+#
+# Steps:
+#   1. Collect the full copy plan (src -> dst pairs)
+#   2. Pre-copy  md5 check  - compare src vs existing dst (if any)
+#   3. Copy all files          (skipped with --check-only)
+#   4. Post-copy md5 check  - confirm src == dst after copy
+#
+# Usage:
+#   apply-prebuilt-adreno-patch [--check-only] <SRC> <DEST_ROOT>
+#
+#   --check-only  Only run the pre-copy md5 check; do not copy any files.
+#   SRC           root of the Qualcomm auto-a7xbins drop
+#                 e.g. ~/Downloads/auto-a7xbins_.../auto-a7xbins
+#   DEST_ROOT     directory under which an "adreno/" folder will be created
+#                 (mirrors nhlos/.../prebuilt_HY11/sa8797/adreno layout)
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Args
+# ---------------------------------------------------------------------------
+CHECK_ONLY=0
+if [[ "${1:-}" == "--check-only" ]]; then
+    CHECK_ONLY=1
+    shift
+fi
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: $(basename "$0") [--check-only] <SRC> <DEST_ROOT>" >&2
+    exit 1
+fi
+
+SRC="$(realpath "$1")"
+DEST="$(realpath "$2")/adreno"
+
+echo "Source : $SRC"
+echo "Dest   : $DEST"
+echo
+
+# ---------------------------------------------------------------------------
+# Tracking arrays  (populated during plan phase, no files copied yet)
+# ---------------------------------------------------------------------------
+declare -a PLAN_SRCS=()
+declare -a PLAN_DSTS=()
+
+# ---------------------------------------------------------------------------
+# Plan helpers  - record only, do NOT copy
+# ---------------------------------------------------------------------------
+
+# plan_file <src_file> <dst_dir> [dst_filename]
+plan_file() {
+    local src="$1"
+    local dst_dir="$2"
+    local dst_name="${3:-$(basename "$src")}"
+    PLAN_SRCS+=("$src")
+    PLAN_DSTS+=("$dst_dir/$dst_name")
+}
+
+# plan_dir <src_dir> <dst_dir>
+plan_dir() {
+    local src_dir="$1"
+    local dst_dir="$2"
+    while IFS= read -r -d '' f; do
+        local rel="${f#$src_dir/}"
+        plan_file "$f" "$dst_dir/$(dirname "$rel")" "$(basename "$rel")"
+    done < <(find "$src_dir" -type f -print0)
+}
+
+# ---------------------------------------------------------------------------
+# Build copy plan
+# ---------------------------------------------------------------------------
+
+# 1. Libraries  vendor/lib64/*.so  ->  usr/lib/
+for f in "$SRC"/vendor/lib64/*.so; do
+    plan_file "$f" "$DEST/usr/lib"
+done
+
+# 2. pkg-config  vendor/lib64/pkgconfig/*.pc  ->  usr/lib/pkgconfig/
+for f in "$SRC"/vendor/lib64/pkgconfig/*.pc; do
+    plan_file "$f" "$DEST/usr/lib/pkgconfig"
+done
+
+# 3. Firmware  vendor/firmware/*  ->  usr/lib/firmware/
+for f in "$SRC"/vendor/firmware/*; do
+    [[ -f "$f" ]] && plan_file "$f" "$DEST/usr/lib/firmware"
+done
+
+# 4. Executables  vendor/bin/*  ->  usr/bin/
+for f in "$SRC"/vendor/bin/*; do
+    [[ -f "$f" ]] && plan_file "$f" "$DEST/usr/bin"
+done
+
+# 5. Vulkan ICD  vendor/vulkan/icd.d/*  ->  etc/vulkan/icd.d/
+for f in "$SRC"/vendor/vulkan/icd.d/*; do
+    [[ -f "$f" ]] && plan_file "$f" "$DEST/etc/vulkan/icd.d"
+done
+
+# 6. Adreno config  vendor/adreno/*  ->  etc/adreno/
+for f in "$SRC"/vendor/adreno/*; do
+    [[ -f "$f" ]] && plan_file "$f" "$DEST/etc/adreno"
+done
+
+# 7. systemd service units  ->  usr/lib/systemd/system/
+SYSTEMD="$DEST/usr/lib/systemd/system"
+for svc in kgsl@.service kgsl.service adreno_test.service gsl_hab_server.service; do
+    plan_file "$SRC/$svc" "$SYSTEMD"
+done
+
+# 8. systemd drop-in confs  ->  sleep-notify@kgsl@{0,1}.service.d/
+plan_file "$SRC/kgsl@0.conf" "$SYSTEMD/sleep-notify@kgsl@0.service.d" "kgsl@0.conf"
+plan_file "$SRC/kgsl@1.conf" "$SYSTEMD/sleep-notify@kgsl@1.service.d" "kgsl@1.conf"
+
+# 9. sysusers  ->  usr/lib/sysusers.d/
+plan_file "$SRC/graphics-sysusers.conf" "$DEST/usr/lib/sysusers.d"
+
+# 10. Headers
+plan_file "$SRC/include/c2dExt.h"            "$DEST/usr/include"
+plan_file "$SRC/include/gsl_profiler.h"      "$DEST/usr/include"
+plan_file "$SRC/include/private/C2D/c2d2.h" "$DEST/usr/include" "c2d2.h"
+for subdir in CL EGL GLES GLES2 GLES3 KHR; do
+    [[ -d "$SRC/include/public/$subdir" ]] && \
+        plan_dir "$SRC/include/public/$subdir" "$DEST/usr/include/$subdir"
+done
+
+TOTAL="${#PLAN_SRCS[@]}"
+
+# Array to track dst paths that were CHANGED or absent before copying
+declare -a PRE_DIFF_DSTS=()
+
+# ---------------------------------------------------------------------------
+# md5 report helper
+#   print_md5_table <label> <only_changed 0|1>
+#   Iterates PLAN_SRCS / PLAN_DSTS; dst may or may not exist.
+#   When only_changed=1, also populates PRE_DIFF_DSTS.
+# ---------------------------------------------------------------------------
+print_md5_table() {
+    local label="$1"
+    local only_changed="$2"   # 1 = pre-copy: suppress SAME rows; 0 = show all
+
+    local changed=0 same=0 absent=0
+
+    echo "==> $label"
+    printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+        "STATUS" "SRC file (relative to src)" "DST file (relative to dest)" "SRC md5" "DST md5"
+    printf '%0.s-' {1..180}; echo
+
+    for i in "${!PLAN_SRCS[@]}"; do
+        local src_file="${PLAN_SRCS[$i]}"
+        local dst_file="${PLAN_DSTS[$i]}"
+        local rel_src="${src_file#$SRC/}"
+        local rel_dst="${dst_file#$DEST/}"
+
+        local src_md5
+        src_md5=$(md5sum "$src_file" | awk '{print $1}')
+
+        if [[ ! -e "$dst_file" ]]; then
+            printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+                "NEW" "$rel_src" "$rel_dst" "$src_md5" "(absent)"
+            [[ "$only_changed" -eq 1 ]] && PRE_DIFF_DSTS+=("$dst_file")
+            (( absent++ )) || true
+            continue
+        fi
+
+        local dst_md5
+        dst_md5=$(md5sum "$dst_file" | awk '{print $1}')
+
+        if [[ "$src_md5" == "$dst_md5" ]]; then
+            [[ "$only_changed" -eq 0 ]] && \
+                printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+                    "SAME" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
+            (( same++ )) || true
+        else
+            printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+                "CHANGED" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
+            [[ "$only_changed" -eq 1 ]] && PRE_DIFF_DSTS+=("$dst_file")
+            (( changed++ )) || true
+        fi
+    done
+
+    printf '%0.s-' {1..180}; echo
+    echo "  same=$same  changed=$changed  new(absent)=$absent  total=$TOTAL"
+    echo
+}
+
+# ---------------------------------------------------------------------------
+# Pre-copy check
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " PRE-COPY CHECK"
+echo "========================================"
+echo "(showing only files that differ or are absent in dest)"
+echo
+print_md5_table "Pre-copy md5 comparison" 1
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    echo "(--check-only: skipping copy and post-copy check)"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Copy
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " COPYING"
+echo "========================================"
+for i in "${!PLAN_SRCS[@]}"; do
+    dst_dir="$(dirname "${PLAN_DSTS[$i]}")"
+    mkdir -p "$dst_dir"
+    cp "${PLAN_SRCS[$i]}" "${PLAN_DSTS[$i]}"
+    echo "  cp  ${PLAN_SRCS[$i]##$SRC/}  ->  ${PLAN_DSTS[$i]##$DEST/}"
+done
+echo
+
+# Summary of what changed before copy
+if [[ ${#PRE_DIFF_DSTS[@]} -gt 0 ]]; then
+    echo "Files that were CHANGED or NEW before copy (${#PRE_DIFF_DSTS[@]}):"
+    rel_paths=()
+    for p in "${PRE_DIFF_DSTS[@]}"; do
+        rel_paths+=("${p#$DEST/}")
+    done
+    echo "  ${rel_paths[*]}"
+    echo
+fi
+
+# ---------------------------------------------------------------------------
+# Post-copy check
+# ---------------------------------------------------------------------------
+echo "========================================"
+echo " POST-COPY CHECK"
+echo "========================================"
+echo "(showing all files)"
+echo
+
+PASS=0
+FAIL=0
+
+printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+    "STATUS" "SRC file (relative to src)" "DST file (relative to dest)" "SRC md5" "DST md5"
+printf '%0.s-' {1..180}; echo
+
+for i in "${!PLAN_SRCS[@]}"; do
+    src_file="${PLAN_SRCS[$i]}"
+    dst_file="${PLAN_DSTS[$i]}"
+    rel_src="${src_file#$SRC/}"
+    rel_dst="${dst_file#$DEST/}"
+
+    src_md5=$(md5sum "$src_file" | awk '{print $1}')
+    dst_md5=$(md5sum "$dst_file" | awk '{print $1}')
+
+    if [[ "$src_md5" == "$dst_md5" ]]; then
+        printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+            "OK" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
+        (( PASS++ )) || true
+    else
+        printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
+            "FAIL" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
+        (( FAIL++ )) || true
+    fi
+done
+
+printf '%0.s-' {1..180}; echo
+echo "Result: $PASS passed, $FAIL failed  (total $TOTAL)"
+echo "Dest  : $DEST"
+
+[[ $FAIL -eq 0 ]]

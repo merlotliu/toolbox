@@ -1,0 +1,8 @@
+#!/bin/bash
+
+#
+# apply-prebuilt-adreno-patch uninstall - remove apply-prebuilt-adreno-patch configuration
+#
+
+echo "[apply-prebuilt-adreno-patch] uninstall: nothing to remove."
+
