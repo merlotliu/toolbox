@@ -89,7 +89,7 @@ echo
 hr() { printf '%0.s-' {1..150}; echo; }
 
 # ---------------------------------------------------------------------------
-# Step 1: Extract <target>-binaries.tar in each dest variant dir
+# Step 1: Extract <target>-binaries.tar in patch dir (if present) and dest dir
 # ---------------------------------------------------------------------------
 echo "========================================"
 echo " STEP 1: EXTRACT ${TAR_NAME}"
@@ -99,14 +99,22 @@ for PATCH_DIR in "${PATCH_DIRS[@]}"; do
     variant_target="${PATCH_DIR#$PATCH_ROOT/}"
     DEST_DIR="$DEST_ROOT/$variant_target"
 
+    # Extract from patch dir first (so comparison sees unpacked files)
+    PATCH_TAR="$PATCH_DIR/$TAR_NAME"
+    if [[ -f "$PATCH_TAR" ]]; then
+        echo "  cd $PATCH_DIR && tar -xjf $TAR_NAME"
+        (cd "$PATCH_DIR" && tar -xjf "$TAR_NAME")
+    fi
+
+    # Extract from dest dir
     if [[ ! -d "$DEST_DIR" ]]; then
         echo "  WARN: dest dir not found, skipping: $DEST_DIR"
         continue
     fi
 
-    TAR_FILE="$DEST_DIR/$TAR_NAME"
-    if [[ ! -f "$TAR_FILE" ]]; then
-        echo "  WARN: $TAR_FILE not found, skipping extraction"
+    DEST_TAR="$DEST_DIR/$TAR_NAME"
+    if [[ ! -f "$DEST_TAR" ]]; then
+        echo "  WARN: $DEST_TAR not found, skipping extraction"
         continue
     fi
 
