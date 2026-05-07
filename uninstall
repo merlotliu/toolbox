@@ -18,6 +18,11 @@ for tool_dir in "$REPO_DIR"/*/; do
         continue
     fi
 
+    if [ -x "$tool_dir/uninstall" ]; then
+        echo "[$tool_name] running uninstall..."
+        "$tool_dir/uninstall"
+    fi
+
     if [ -L "$link" ] && [ "$(readlink "$link")" = "$tool_script" ]; then
         rm "$link"
         echo "[$tool_name] removed $link"

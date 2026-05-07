@@ -31,7 +31,8 @@ toolbox/
 ├── uninstall      # remove all tool symlinks from ~/.local/bin
 ├── <tool>/
 │   ├── <tool>     # main executable (must be chmod +x)
-│   └── setup      # optional: first-run initialization for this tool
+│   ├── setup      # optional: first-run initialization for this tool
+│   └── uninstall  # optional: cleanup when uninstalling this tool
 └── ...
 ```
 
@@ -60,8 +61,10 @@ Open a new shell and all tools will be available directly by name.
 bash uninstall
 ```
 
-Removes only the symlinks that `setup` created.  Tool directories and any
-configuration files under `~/.config` are left untouched.
+Removes the symlinks that `setup` created.  If a tool provides its own
+`<tool>/uninstall` script, that is invoked first so the tool can clean up
+its own resources (e.g. config files).  Tool directories inside the repo
+are left untouched.
 
 ## Adding a new tool
 
