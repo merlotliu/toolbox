@@ -103,7 +103,7 @@ stage_file() {
     fi
     mkdir -p "$dst_dir"
     cp "$src" "$dst_dir/$dst_name"
-    echo "  cp  ${src#$PATCH_SRC/}  ->  ${dst_dir#$TMPDIR_STAGE/}/$dst_name"
+    echo "  cp  ${src#$PATCH_SRC/}  ->  ${dst_dir#$STAGE_PARENT/}/$dst_name"
 }
 
 # stage_dir <src_dir> <dst_dir>
