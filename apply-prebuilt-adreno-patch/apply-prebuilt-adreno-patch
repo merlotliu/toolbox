@@ -1,270 +1,174 @@
 #!/bin/bash
 # apply-prebuilt-adreno-patch
 #
-# Reorganise a Qualcomm auto-a7xbins source layout into the nhlos prebuilt
-# adreno directory structure.
+# Stage a Qualcomm auto-a7xbins drop into a temporary prebuilt_HY11-style
+# directory tree, then delegate to apply-prebuilt-patch for the actual patch
+# application.
 #
 # Steps:
-#   1. Collect the full copy plan (src -> dst pairs)
-#   2. Pre-copy  md5 check  - compare src vs existing dst (if any)
-#   3. Copy all files          (skipped with --check-only)
-#   4. Post-copy md5 check  - confirm src == dst after copy
+#   1. Copy files from -s (auto-a7xbins layout) into a tmpdir that mirrors
+#      the nhlos prebuilt_HY11/sa8797/adreno directory structure.
+#   2. Run:  apply-prebuilt-patch -s <tmpdir> -d <dest_root> -t adreno [flags]
 #
 # Usage:
-#   apply-prebuilt-adreno-patch [--check-only] <SRC> <DEST_ROOT>
+#   apply-prebuilt-adreno-patch -s PATCH_SRC [-d DEST_ROOT]
+#                               [--check-only|--only-check|--only-check-tar] [-y]
 #
-#   --check-only  Only run the pre-copy md5 check; do not copy any files.
-#   SRC           root of the Qualcomm auto-a7xbins drop
-#                 e.g. ~/Downloads/auto-a7xbins_.../auto-a7xbins
-#   DEST_ROOT     directory under which an "adreno/" folder will be created
-#                 (mirrors nhlos/.../prebuilt_HY11/sa8797/adreno layout)
+#   -s PATCH_SRC    root of the Qualcomm auto-a7xbins drop
+#                   e.g. ~/Downloads/auto-a7xbins_.../auto-a7xbins
+#   -d DEST_ROOT    prebuilt_HY11 directory in the source tree (optional)
+#                   default: /home/lixiang/Workspace/xref/W-8797-MASTER/nhlos/apps/apps_proc/prebuilt_HY11
+#
+#   --only-check / --check-only
+#                   Passed through to apply-prebuilt-patch (pre-apply check only).
+#   --only-check-tar
+#                   Passed through to apply-prebuilt-patch (tar MD5 check only).
+#   -y / --yes      Passed through to apply-prebuilt-patch (skip confirmation).
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Args
+# Argument parsing
 # ---------------------------------------------------------------------------
-CHECK_ONLY=0
-if [[ "${1:-}" == "--check-only" ]]; then
-    CHECK_ONLY=1
-    shift
-fi
+DEFAULT_DEST_ROOT="/home/lixiang/Workspace/xref/W-8797-MASTER/nhlos/apps/apps_proc/prebuilt_HY11"
 
-if [[ $# -lt 2 ]]; then
-    echo "Usage: $(basename "$0") [--check-only] <SRC> <DEST_ROOT>" >&2
+PATCH_SRC=""
+DEST_ROOT=""
+PASSTHROUGH=()
+
+usage() {
+    echo "Usage: $(basename "$0") -s PATCH_SRC [-d DEST_ROOT] [--check-only|--only-check|--only-check-tar] [-y]" >&2
     exit 1
-fi
+}
 
-SRC="$(realpath "$1")"
-DEST="$(realpath "$2")/adreno"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s) PATCH_SRC="$2"; shift 2 ;;
+        -d) DEST_ROOT="$2"; shift 2 ;;
+        --only-check|--check-only) PASSTHROUGH+=("$1"); shift ;;
+        --only-check-tar)          PASSTHROUGH+=("$1"); shift ;;
+        -y|--yes)                  PASSTHROUGH+=("$1"); shift ;;
+        *) echo "Unknown option: $1" >&2; usage ;;
+    esac
+done
 
-echo "Source : $SRC"
-echo "Dest   : $DEST"
+[[ -z "$PATCH_SRC" ]] && usage
+
+PATCH_SRC="$(realpath "$PATCH_SRC")"
+DEST_ROOT="${DEST_ROOT:-$DEFAULT_DEST_ROOT}"
+
+echo "Patch source : $PATCH_SRC"
+echo "Dest root    : $DEST_ROOT"
 echo
 
 # ---------------------------------------------------------------------------
-# Tracking arrays  (populated during plan phase, no files copied yet)
+# Temp directory – cleaned up on exit
 # ---------------------------------------------------------------------------
-declare -a PLAN_SRCS=()
-declare -a PLAN_DSTS=()
+TMPDIR_STAGE="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_STAGE"' EXIT
 
-# ---------------------------------------------------------------------------
-# Plan helpers  - record only, do NOT copy
-# ---------------------------------------------------------------------------
+STAGE="$TMPDIR_STAGE/adreno"
 
-# plan_file <src_file> <dst_dir> [dst_filename]
-plan_file() {
+echo "========================================"
+echo " STEP 1: STAGE FILES INTO TMPDIR"
+echo "========================================"
+echo "Staging to: $STAGE"
+echo
+
+# stage_file <src_file> <dst_dir> [dst_filename]
+stage_file() {
     local src="$1"
     local dst_dir="$2"
     local dst_name="${3:-$(basename "$src")}"
-    PLAN_SRCS+=("$src")
-    PLAN_DSTS+=("$dst_dir/$dst_name")
+    if [[ ! -f "$src" ]]; then
+        echo "  WARN: source file not found, skipping: $src"
+        return
+    fi
+    mkdir -p "$dst_dir"
+    cp "$src" "$dst_dir/$dst_name"
+    echo "  cp  ${src#$PATCH_SRC/}  ->  ${dst_dir#$TMPDIR_STAGE/}/$dst_name"
 }
 
-# plan_dir <src_dir> <dst_dir>
-plan_dir() {
+# stage_dir <src_dir> <dst_dir>
+stage_dir() {
     local src_dir="$1"
     local dst_dir="$2"
     while IFS= read -r -d '' f; do
         local rel="${f#$src_dir/}"
-        plan_file "$f" "$dst_dir/$(dirname "$rel")" "$(basename "$rel")"
+        stage_file "$f" "$dst_dir/$(dirname "$rel")" "$(basename "$rel")"
     done < <(find "$src_dir" -type f -print0)
 }
 
-# ---------------------------------------------------------------------------
-# Build copy plan
-# ---------------------------------------------------------------------------
-
 # 1. Libraries  vendor/lib64/*.so  ->  usr/lib/
-for f in "$SRC"/vendor/lib64/*.so; do
-    plan_file "$f" "$DEST/usr/lib"
+for f in "$PATCH_SRC"/vendor/lib64/*.so; do
+    stage_file "$f" "$STAGE/usr/lib"
 done
 
 # 2. pkg-config  vendor/lib64/pkgconfig/*.pc  ->  usr/lib/pkgconfig/
-for f in "$SRC"/vendor/lib64/pkgconfig/*.pc; do
-    plan_file "$f" "$DEST/usr/lib/pkgconfig"
+for f in "$PATCH_SRC"/vendor/lib64/pkgconfig/*.pc; do
+    stage_file "$f" "$STAGE/usr/lib/pkgconfig"
 done
 
 # 3. Firmware  vendor/firmware/*  ->  usr/lib/firmware/
-for f in "$SRC"/vendor/firmware/*; do
-    [[ -f "$f" ]] && plan_file "$f" "$DEST/usr/lib/firmware"
+for f in "$PATCH_SRC"/vendor/firmware/*; do
+    [[ -f "$f" ]] && stage_file "$f" "$STAGE/usr/lib/firmware"
 done
 
 # 4. Executables  vendor/bin/*  ->  usr/bin/
-for f in "$SRC"/vendor/bin/*; do
-    [[ -f "$f" ]] && plan_file "$f" "$DEST/usr/bin"
+for f in "$PATCH_SRC"/vendor/bin/*; do
+    [[ -f "$f" ]] && stage_file "$f" "$STAGE/usr/bin"
 done
 
 # 5. Vulkan ICD  vendor/vulkan/icd.d/*  ->  etc/vulkan/icd.d/
-for f in "$SRC"/vendor/vulkan/icd.d/*; do
-    [[ -f "$f" ]] && plan_file "$f" "$DEST/etc/vulkan/icd.d"
+for f in "$PATCH_SRC"/vendor/vulkan/icd.d/*; do
+    [[ -f "$f" ]] && stage_file "$f" "$STAGE/etc/vulkan/icd.d"
 done
 
 # 6. Adreno config  vendor/adreno/*  ->  etc/adreno/
-for f in "$SRC"/vendor/adreno/*; do
-    [[ -f "$f" ]] && plan_file "$f" "$DEST/etc/adreno"
+for f in "$PATCH_SRC"/vendor/adreno/*; do
+    [[ -f "$f" ]] && stage_file "$f" "$STAGE/etc/adreno"
 done
 
 # 7. systemd service units  ->  usr/lib/systemd/system/
-SYSTEMD="$DEST/usr/lib/systemd/system"
+SYSTEMD="$STAGE/usr/lib/systemd/system"
 for svc in kgsl@.service kgsl.service adreno_test.service gsl_hab_server.service; do
-    plan_file "$SRC/$svc" "$SYSTEMD"
+    stage_file "$PATCH_SRC/$svc" "$SYSTEMD"
 done
 
 # 8. systemd drop-in confs  ->  sleep-notify@kgsl@{0,1}.service.d/
-plan_file "$SRC/kgsl@0.conf" "$SYSTEMD/sleep-notify@kgsl@0.service.d" "kgsl@0.conf"
-plan_file "$SRC/kgsl@1.conf" "$SYSTEMD/sleep-notify@kgsl@1.service.d" "kgsl@1.conf"
+stage_file "$PATCH_SRC/kgsl@0.conf" "$SYSTEMD/sleep-notify@kgsl@0.service.d" "kgsl@0.conf"
+stage_file "$PATCH_SRC/kgsl@1.conf" "$SYSTEMD/sleep-notify@kgsl@1.service.d" "kgsl@1.conf"
 
 # 9. sysusers  ->  usr/lib/sysusers.d/
-plan_file "$SRC/graphics-sysusers.conf" "$DEST/usr/lib/sysusers.d"
+stage_file "$PATCH_SRC/graphics-sysusers.conf" "$STAGE/usr/lib/sysusers.d"
 
 # 10. Headers
-plan_file "$SRC/include/c2dExt.h"            "$DEST/usr/include"
-plan_file "$SRC/include/gsl_profiler.h"      "$DEST/usr/include"
-plan_file "$SRC/include/private/C2D/c2d2.h" "$DEST/usr/include" "c2d2.h"
+stage_file "$PATCH_SRC/include/c2dExt.h"            "$STAGE/usr/include"
+stage_file "$PATCH_SRC/include/gsl_profiler.h"      "$STAGE/usr/include"
+stage_file "$PATCH_SRC/include/private/C2D/c2d2.h" "$STAGE/usr/include" "c2d2.h"
 for subdir in CL EGL GLES GLES2 GLES3 KHR; do
-    [[ -d "$SRC/include/public/$subdir" ]] && \
-        plan_dir "$SRC/include/public/$subdir" "$DEST/usr/include/$subdir"
+    [[ -d "$PATCH_SRC/include/public/$subdir" ]] && \
+        stage_dir "$PATCH_SRC/include/public/$subdir" "$STAGE/usr/include/$subdir"
 done
 
-TOTAL="${#PLAN_SRCS[@]}"
-
-# Array to track dst paths that were CHANGED or absent before copying
-declare -a PRE_DIFF_DSTS=()
-
-# ---------------------------------------------------------------------------
-# md5 report helper
-#   print_md5_table <label> <only_changed 0|1>
-#   Iterates PLAN_SRCS / PLAN_DSTS; dst may or may not exist.
-#   When only_changed=1, also populates PRE_DIFF_DSTS.
-# ---------------------------------------------------------------------------
-print_md5_table() {
-    local label="$1"
-    local only_changed="$2"   # 1 = pre-copy: suppress SAME rows; 0 = show all
-
-    local changed=0 same=0 absent=0
-
-    echo "==> $label"
-    printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-        "STATUS" "SRC file (relative to src)" "DST file (relative to dest)" "SRC md5" "DST md5"
-    printf '%0.s-' {1..180}; echo
-
-    for i in "${!PLAN_SRCS[@]}"; do
-        local src_file="${PLAN_SRCS[$i]}"
-        local dst_file="${PLAN_DSTS[$i]}"
-        local rel_src="${src_file#$SRC/}"
-        local rel_dst="${dst_file#$DEST/}"
-
-        local src_md5
-        src_md5=$(md5sum "$src_file" | awk '{print $1}')
-
-        if [[ ! -e "$dst_file" ]]; then
-            printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-                "NEW" "$rel_src" "$rel_dst" "$src_md5" "(absent)"
-            [[ "$only_changed" -eq 1 ]] && PRE_DIFF_DSTS+=("$dst_file")
-            (( absent++ )) || true
-            continue
-        fi
-
-        local dst_md5
-        dst_md5=$(md5sum "$dst_file" | awk '{print $1}')
-
-        if [[ "$src_md5" == "$dst_md5" ]]; then
-            [[ "$only_changed" -eq 0 ]] && \
-                printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-                    "SAME" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
-            (( same++ )) || true
-        else
-            printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-                "CHANGED" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
-            [[ "$only_changed" -eq 1 ]] && PRE_DIFF_DSTS+=("$dst_file")
-            (( changed++ )) || true
-        fi
-    done
-
-    printf '%0.s-' {1..180}; echo
-    echo "  same=$same  changed=$changed  new(absent)=$absent  total=$TOTAL"
-    echo
-}
-
-# ---------------------------------------------------------------------------
-# Pre-copy check
-# ---------------------------------------------------------------------------
-echo "========================================"
-echo " PRE-COPY CHECK"
-echo "========================================"
-echo "(showing only files that differ or are absent in dest)"
-echo
-print_md5_table "Pre-copy md5 comparison" 1
-
-if [[ "$CHECK_ONLY" -eq 1 ]]; then
-    echo "(--check-only: skipping copy and post-copy check)"
-    exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Copy
-# ---------------------------------------------------------------------------
-echo "========================================"
-echo " COPYING"
-echo "========================================"
-for i in "${!PLAN_SRCS[@]}"; do
-    dst_dir="$(dirname "${PLAN_DSTS[$i]}")"
-    mkdir -p "$dst_dir"
-    cp "${PLAN_SRCS[$i]}" "${PLAN_DSTS[$i]}"
-    echo "  cp  ${PLAN_SRCS[$i]##$SRC/}  ->  ${PLAN_DSTS[$i]##$DEST/}"
-done
 echo
 
-# Summary of what changed before copy
-if [[ ${#PRE_DIFF_DSTS[@]} -gt 0 ]]; then
-    echo "Files that were CHANGED or NEW before copy (${#PRE_DIFF_DSTS[@]}):"
-    rel_paths=()
-    for p in "${PRE_DIFF_DSTS[@]}"; do
-        rel_paths+=("${p#$DEST/}")
-    done
-    echo "  ${rel_paths[*]}"
-    echo
-fi
+# ---------------------------------------------------------------------------
+# Restructure: move staged adreno/ into both sa8797/adreno and sa8797-fts/adreno
+# so that apply-prebuilt-patch can discover them at <variant>/<target> depth.
+# ---------------------------------------------------------------------------
+mv "$STAGE" "$TMPDIR_STAGE/sa8797-adreno-tmp"
+mkdir -p "$TMPDIR_STAGE/sa8797" "$TMPDIR_STAGE/sa8797-fts"
+cp -r "$TMPDIR_STAGE/sa8797-adreno-tmp" "$TMPDIR_STAGE/sa8797/adreno"
+mv "$TMPDIR_STAGE/sa8797-adreno-tmp" "$TMPDIR_STAGE/sa8797-fts/adreno"
 
 # ---------------------------------------------------------------------------
-# Post-copy check
+# Step 2: delegate to apply-prebuilt-patch
 # ---------------------------------------------------------------------------
 echo "========================================"
-echo " POST-COPY CHECK"
+echo " STEP 2: APPLY VIA apply-prebuilt-patch"
 echo "========================================"
-echo "(showing all files)"
+echo "  apply-prebuilt-patch -s $TMPDIR_STAGE -d $DEST_ROOT -t adreno${PASSTHROUGH:+ ${PASSTHROUGH[*]}}"
 echo
 
-PASS=0
-FAIL=0
-
-printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-    "STATUS" "SRC file (relative to src)" "DST file (relative to dest)" "SRC md5" "DST md5"
-printf '%0.s-' {1..180}; echo
-
-for i in "${!PLAN_SRCS[@]}"; do
-    src_file="${PLAN_SRCS[$i]}"
-    dst_file="${PLAN_DSTS[$i]}"
-    rel_src="${src_file#$SRC/}"
-    rel_dst="${dst_file#$DEST/}"
-
-    src_md5=$(md5sum "$src_file" | awk '{print $1}')
-    dst_md5=$(md5sum "$dst_file" | awk '{print $1}')
-
-    if [[ "$src_md5" == "$dst_md5" ]]; then
-        printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-            "OK" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
-        (( PASS++ )) || true
-    else
-        printf "%-8s  %-46s  %-46s  %-34s  %s\n" \
-            "FAIL" "$rel_src" "$rel_dst" "$src_md5" "$dst_md5"
-        (( FAIL++ )) || true
-    fi
-done
-
-printf '%0.s-' {1..180}; echo
-echo "Result: $PASS passed, $FAIL failed  (total $TOTAL)"
-echo "Dest  : $DEST"
-
-[[ $FAIL -eq 0 ]]
+apply-prebuilt-patch -s "$TMPDIR_STAGE" -d "$DEST_ROOT" -t adreno "${PASSTHROUGH[@]}"
