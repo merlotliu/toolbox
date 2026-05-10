@@ -82,9 +82,9 @@ echo
 # ---------------------------------------------------------------------------
 STAGE="$STAGE_PARENT/adreno"
 
-# Clean up any previous staging run so stale files from a prior drop
-# don't pollute the current one.
-rm -rf "$STAGE"
+# Clean up any previous staging run under this parent so stale files
+# from a prior drop don't pollute the current one.
+rm -rf "$STAGE" "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"
 
 echo "========================================"
 echo " STEP 1: STAGE FILES INTO TMPDIR"
@@ -171,16 +171,13 @@ done
 echo
 
 # ---------------------------------------------------------------------------
-# Build the variant structure apply-prebuilt-patch expects in a separate
-# tmpdir so that <STAGE_PARENT> retains only the adreno/ directory.
-# The tmpdir is removed automatically on exit.
+# Restructure: move staged adreno/ into both sa8797/adreno and sa8797-fts/adreno
+# so that apply-prebuilt-patch can discover them at <variant>/<target> depth.
 # ---------------------------------------------------------------------------
-APPLY_TMP="$(mktemp -d)"
-trap 'rm -rf "$APPLY_TMP"' EXIT
-
-mkdir -p "$APPLY_TMP/sa8797" "$APPLY_TMP/sa8797-fts"
-cp -r "$STAGE" "$APPLY_TMP/sa8797/adreno"
-cp -r "$STAGE" "$APPLY_TMP/sa8797-fts/adreno"
+mv "$STAGE" "$STAGE_PARENT/sa8797-adreno-tmp"
+mkdir -p "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"
+cp -r "$STAGE_PARENT/sa8797-adreno-tmp" "$STAGE_PARENT/sa8797/adreno"
+mv "$STAGE_PARENT/sa8797-adreno-tmp" "$STAGE_PARENT/sa8797-fts/adreno"
 
 # ---------------------------------------------------------------------------
 # Step 2: delegate to apply-prebuilt-patch
@@ -188,7 +185,7 @@ cp -r "$STAGE" "$APPLY_TMP/sa8797-fts/adreno"
 echo "========================================"
 echo " STEP 2: APPLY VIA apply-prebuilt-patch"
 echo "========================================"
-echo "  apply-prebuilt-patch -s $APPLY_TMP -d $DEST_ROOT -t adreno${PASSTHROUGH:+ ${PASSTHROUGH[*]}}"
+echo "  apply-prebuilt-patch -s $STAGE_PARENT -d $DEST_ROOT -t adreno${PASSTHROUGH:+ ${PASSTHROUGH[*]}}"
 echo
 
-apply-prebuilt-patch -s "$APPLY_TMP" -d "$DEST_ROOT" -t adreno "${PASSTHROUGH[@]}"
+apply-prebuilt-patch -s "$STAGE_PARENT" -d "$DEST_ROOT" -t adreno "${PASSTHROUGH[@]}"
