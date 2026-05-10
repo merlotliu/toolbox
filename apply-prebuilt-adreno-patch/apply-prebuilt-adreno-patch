@@ -21,9 +21,11 @@
 #                   default: /home/lixiang/Workspace/xref/W-8797-MASTER/nhlos/apps/apps_proc/prebuilt_HY11
 #   -p STAGE_PARENT parent directory for the staging area (optional)
 #                   default: /tmp
-#                   The adreno staging directory will be <STAGE_PARENT>/adreno.
-#                   The directory is NOT removed after the script exits so that
-#                   the staged files can be inspected afterwards.
+#                   The staged layout will be:
+#                     <STAGE_PARENT>/sa8797/adreno/
+#                     <STAGE_PARENT>/sa8797-fts/adreno/  (copy of sa8797)
+#                   <STAGE_PARENT> is passed directly to apply-prebuilt-patch
+#                   as -s and is NOT removed after the script exits.
 #
 #   --only-check / --check-only
 #                   Passed through to apply-prebuilt-patch (pre-apply check only).
@@ -78,13 +80,14 @@ echo "Stage parent  : $STAGE_PARENT"
 echo
 
 # ---------------------------------------------------------------------------
-# Staging directory  (<STAGE_PARENT>/adreno) – NOT removed on exit
+# Staging directory  (<STAGE_PARENT>/sa8797/adreno) – NOT removed on exit
 # ---------------------------------------------------------------------------
-STAGE="$STAGE_PARENT/adreno"
+STAGE="$STAGE_PARENT/sa8797/adreno"
 
 # Clean up any previous staging run under this parent so stale files
 # from a prior drop don't pollute the current one.
-rm -rf "$STAGE" "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"
+rm -rf "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"
+mkdir -p "$STAGE"
 
 echo "========================================"
 echo " STEP 1: STAGE FILES INTO TMPDIR"
@@ -171,13 +174,9 @@ done
 echo
 
 # ---------------------------------------------------------------------------
-# Restructure: move staged adreno/ into both sa8797/adreno and sa8797-fts/adreno
-# so that apply-prebuilt-patch can discover them at <variant>/<target> depth.
+# Duplicate sa8797/adreno into sa8797-fts/adreno (same binaries for both).
 # ---------------------------------------------------------------------------
-mv "$STAGE" "$STAGE_PARENT/sa8797-adreno-tmp"
-mkdir -p "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"
-cp -r "$STAGE_PARENT/sa8797-adreno-tmp" "$STAGE_PARENT/sa8797/adreno"
-mv "$STAGE_PARENT/sa8797-adreno-tmp" "$STAGE_PARENT/sa8797-fts/adreno"
+cp -r "$STAGE_PARENT/sa8797/adreno" "$STAGE_PARENT/sa8797-fts/adreno"
 
 # ---------------------------------------------------------------------------
 # Step 2: delegate to apply-prebuilt-patch
