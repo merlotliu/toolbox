@@ -27,6 +27,8 @@
 #                   Extract tar and run pre-apply MD5 check only; do not modify anything.
 #   --only-check-tar
 #                   Compare MD5 of <target>-binaries.tar between patch and dest only; do not extract or modify anything.
+#   --skip-new      Do not apply files that are present in the patch but absent
+#                   in dest (NEW files).  Only DIFF files are applied.
 #   -y / --yes      Skip the confirmation prompt before applying.
 
 set -euo pipefail
@@ -41,10 +43,11 @@ DEST_ROOT=""
 TARGET=""
 CHECK_ONLY=0
 CHECK_TAR_ONLY=0
+SKIP_NEW=0
 YES=0
 
 usage() {
-    echo "Usage: $(basename "$0") -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only|--only-check-tar] [-y]" >&2
+    echo "Usage: $(basename "$0") -s PATCH_ROOT [-d DEST_ROOT] -t TARGET [--only-check|--check-only|--only-check-tar] [--skip-new] [-y]" >&2
     exit 1
 }
 
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         -t) TARGET="$2";     shift 2 ;;
         --only-check|--check-only) CHECK_ONLY=1; shift ;;
         --only-check-tar) CHECK_TAR_ONLY=1; shift ;;
+        --skip-new) SKIP_NEW=1; shift ;;
         -y|--yes)  YES=1;  shift ;;
         *) echo "Unknown option: $1" >&2; usage ;;
     esac
@@ -71,6 +75,7 @@ echo "Patch root : $PATCH_ROOT"
 echo "Dest root  : $DEST_ROOT"
 echo "Target     : $TARGET"
 echo "Tar name   : $TAR_NAME"
+echo "Skip new   : $([[ $SKIP_NEW -eq 1 ]] && echo yes || echo no)"
 echo
 
 # ---------------------------------------------------------------------------
@@ -196,10 +201,14 @@ for PATCH_DIR in "${PATCH_DIRS[@]}"; do
         patch_md5=$(md5sum "$pfile" | awk '{print $1}')
 
         if [[ ! -e "$dfile" ]]; then
-            printf "%-8s  %-60s  %-34s  %s\n" "NEW" "$rel" "$patch_md5" "(absent)"
-            CHANGED_PATCH+=("$pfile")
-            CHANGED_DEST+=("$dfile")
-            CHANGED_RELS+=("$rel")
+            if [[ $SKIP_NEW -eq 1 ]]; then
+                printf "%-8s  %-60s  %-34s  %s\n" "SKIP" "$rel" "$patch_md5" "(absent, --skip-new)"
+            else
+                printf "%-8s  %-60s  %-34s  %s\n" "NEW" "$rel" "$patch_md5" "(absent)"
+                CHANGED_PATCH+=("$pfile")
+                CHANGED_DEST+=("$dfile")
+                CHANGED_RELS+=("$rel")
+            fi
             (( TOTAL_NEW++ )) || true
             continue
         fi

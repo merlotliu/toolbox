@@ -23,6 +23,8 @@
 #                   Passed through to apply-prebuilt-patch (pre-apply check only).
 #   --only-check-tar
 #                   Passed through to apply-prebuilt-patch (tar MD5 check only).
+#   --skip-new      Passed through to apply-prebuilt-patch; do not apply files
+#                   that are present in the patch but absent in dest.
 #   -y / --yes      Passed through to apply-prebuilt-patch (skip confirmation).
 
 set -euo pipefail
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         -d) DEST_ROOT="$2"; shift 2 ;;
         --only-check|--check-only) PASSTHROUGH+=("$1"); shift ;;
         --only-check-tar)          PASSTHROUGH+=("$1"); shift ;;
+        --skip-new)                PASSTHROUGH+=("$1"); shift ;;
         -y|--yes)                  PASSTHROUGH+=("$1"); shift ;;
         *) echo "Unknown option: $1" >&2; usage ;;
     esac
