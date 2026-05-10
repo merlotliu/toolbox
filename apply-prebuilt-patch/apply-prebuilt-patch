@@ -82,7 +82,7 @@ echo
 # Discover all <variant>/<target> directories in the patch root
 # ---------------------------------------------------------------------------
 mapfile -d '' PATCH_DIRS < <(find "$PATCH_ROOT" -mindepth 2 -maxdepth 2 \
-    -type d -name "$TARGET" -print0 | sort -z)
+    -type d -name "$TARGET" -print0 2>/dev/null | sort -z)
 
 if [[ ${#PATCH_DIRS[@]} -eq 0 ]]; then
     echo "No '$TARGET' directories found under $PATCH_ROOT" >&2

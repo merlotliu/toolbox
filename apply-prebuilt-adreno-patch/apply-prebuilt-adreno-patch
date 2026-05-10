@@ -84,9 +84,16 @@ echo
 # ---------------------------------------------------------------------------
 STAGE="$STAGE_PARENT/sa8797/adreno"
 
-# Clean up any previous staging run under this parent so stale files
-# from a prior drop don't pollute the current one.
-rm -rf "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"
+# If previous staging directories exist, ask before removing them.
+for _d in "$STAGE_PARENT/sa8797" "$STAGE_PARENT/sa8797-fts"; do
+    if [[ -e "$_d" ]]; then
+        read -r -p "Remove existing staging directory '$_d'? [y/N] " _reply
+        case "$_reply" in
+            [yY][eE][sS]|[yY]) rm -rf "$_d" ;;
+            *) echo "Aborted."; exit 1 ;;
+        esac
+    fi
+done
 mkdir -p "$STAGE"
 
 echo "========================================"
