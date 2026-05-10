@@ -287,6 +287,7 @@ hr
 
 PASS=0
 FAIL=0
+SKIP=0
 
 for PATCH_DIR in "${PATCH_DIRS[@]}"; do
     variant_target="${PATCH_DIR#$PATCH_ROOT/}"
@@ -300,8 +301,13 @@ for PATCH_DIR in "${PATCH_DIRS[@]}"; do
         patch_md5=$(md5sum "$pfile" | awk '{print $1}')
 
         if [[ ! -e "$dfile" ]]; then
-            printf "%-8s  %-60s  %-34s  %s\n" "FAIL" "$rel" "$patch_md5" "(absent)"
-            (( FAIL++ )) || true
+            if [[ $SKIP_NEW -eq 1 ]]; then
+                printf "%-8s  %-60s  %-34s  %s\n" "SKIP" "$rel" "$patch_md5" "(absent, --skip-new)"
+                (( SKIP++ )) || true
+            else
+                printf "%-8s  %-60s  %-34s  %s\n" "FAIL" "$rel" "$patch_md5" "(absent)"
+                (( FAIL++ )) || true
+            fi
             continue
         fi
 
@@ -318,7 +324,7 @@ for PATCH_DIR in "${PATCH_DIRS[@]}"; do
 done
 
 hr
-echo "Result: $PASS OK, $FAIL FAILED  (total $TOTAL)"
+echo "Result: $PASS OK, $FAIL FAILED, $SKIP SKIPPED  (total $TOTAL)"
 echo
 
 if [[ $FAIL -gt 0 ]]; then
