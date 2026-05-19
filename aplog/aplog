@@ -1,0 +1,179 @@
+#!/bin/bash
+
+# Default values
+ROOT_DIR="/tmp"
+DEVICE_ID=""
+LOG_NAME=""
+PULL_DIRS=()
+
+# Function: Print usage information
+print_usage() {
+    cat << EOF
+Usage: $0 -s device_id -d source_dir [-n log_name] [-p root_dir] [-h]
+
+Required:
+  -s device_id    ADB device serial number (required)
+  -d source_dir   Directory to pull from device (can be used multiple times, at least one required)
+                  Example: -d /mnt/android_log -d /mnt/linux_log
+
+Optional:
+  -n log_name     Name for log directory and archive (default: device_id)
+  -p root_dir     Root directory for log files (default: /tmp)
+  -h              Display this help message
+
+Examples:
+  $0 -s 45b92d3ab0f -d /mnt/android_log -d /mnt/linux_log
+  $0 -s 45b92d3ab0f -d /mnt/android_log -n VIN123456 -p ~/logs
+  $0 -s 45b92d3ab0f -d /data/core -p ~/logs
+EOF
+}
+
+# Function: Pull logs from device
+pull_logs_from_device() {
+    local device_id="$1"
+    local source_path="$2"
+    local dest_path="$3"
+    
+    echo "Pulling ${source_path} from device ${device_id}..."
+    adb -s "${device_id}" pull "${source_path}" "${dest_path}"
+    echo ""
+}
+
+# Function: Process all clp/clp.zst files in a directory
+process_clp_files() {
+    local base_dir="$1"
+    
+    echo "Processing clp and clp.zst files..."
+    
+    # Find all .clp and .clp.zst files
+    local clp_files=()
+    while IFS= read -r -d '' file; do
+        clp_files+=("$file")
+    done < <(find "${base_dir}" -type f \( -name "*.clp" -o -name "*.clp.zst" \) -print0)
+    
+    if [ ${#clp_files[@]} -eq 0 ]; then
+        echo "No clp or clp.zst files found"
+        echo ""
+        return 0
+    fi
+    
+    echo "Found ${#clp_files[@]} clp/clp.zst files"
+    
+    # Process each file with clpd
+    for clp_file in "${clp_files[@]}"; do
+        local dir_path=$(dirname "${clp_file}")
+        local filename=$(basename "${clp_file}")
+        
+        echo "Processing: ${filename}"
+        clpd "${clp_file}" "${dir_path}"
+        
+        # Remove the original clp file after successful processing
+        if [ $? -eq 0 ]; then
+            rm -f "${clp_file}"
+        fi
+    done
+    
+    echo ""
+}
+
+# Function: Create archive
+create_archive() {
+    local root_dir="$1"
+    local archive_name="$2"
+    local dir_name="$3"
+    
+    echo "Creating archive: ${archive_name}"
+    tar -czf "${archive_name}" -C "${root_dir}" "${dir_name}"
+    
+    if [ $? -eq 0 ]; then
+        local archive_size=$(du -h "${archive_name}" | cut -f1)
+        echo "Archive created successfully (Size: $archive_size)"
+    fi
+    echo ""
+    return $?
+}
+
+# Parse command line arguments
+while getopts "p:d:s:n:h" opt; do
+    case $opt in
+        p)
+            ROOT_DIR="$OPTARG"
+            ;;
+        d)
+            PULL_DIRS+=("$OPTARG")
+            ;;
+        s)
+            DEVICE_ID="$OPTARG"
+            ;;
+        n)
+            LOG_NAME="$OPTARG"
+            ;;
+        h)
+            print_usage
+            exit 0
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            print_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Shift to get positional parameters after options
+shift $((OPTIND-1))
+
+# Validate required parameters
+if [ -z "$DEVICE_ID" ]; then
+    echo "Error: Device ID is required" >&2
+    print_usage
+    exit 1
+fi
+
+if [ ${#PULL_DIRS[@]} -eq 0 ]; then
+    echo "Error: At least one directory (-d) must be specified" >&2
+    print_usage
+    exit 1
+fi
+
+# If log name is not provided, use device ID
+if [ -z "$LOG_NAME" ]; then
+    LOG_NAME="$DEVICE_ID"
+fi
+
+# Setup paths
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_DIR="${ROOT_DIR}/${LOG_NAME}-${TIMESTAMP}"
+ARCHIVE_NAME="${ROOT_DIR}/${LOG_NAME}-${TIMESTAMP}.tar.gz"
+
+echo ""
+echo "Log Collection Started"
+echo "Device: ${DEVICE_ID}, Log: ${LOG_NAME}"
+echo "Destination: ${LOG_DIR}"
+echo ""
+
+# Create log directory
+mkdir -p "${LOG_DIR}"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to create log directory" >&2
+    exit 1
+fi
+
+# Pull all specified directories
+for pull_dir in "${PULL_DIRS[@]}"; do
+    pull_logs_from_device "${DEVICE_ID}" "${pull_dir}" "${LOG_DIR}/"
+done
+
+# Process all clp and clp.zst files in the log directory
+process_clp_files "${LOG_DIR}"
+
+# Create tar.gz archive
+create_archive "${ROOT_DIR}" "${ARCHIVE_NAME}" "${LOG_NAME}-${TIMESTAMP}"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to create archive" >&2
+    exit 1
+fi
+
+echo "Completed!"
+echo "Log directory: ${LOG_DIR}"
+echo "Archive file: ${ARCHIVE_NAME}"

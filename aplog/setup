@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# aplog setup - initialize aplog configuration
+#
+
+echo "[aplog] setup: nothing to configure."

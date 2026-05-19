@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# aplog uninstall - remove aplog configuration
+#
+
+echo "[aplog] uninstall: nothing to remove."
