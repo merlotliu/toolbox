@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# parse-sf-buffers uninstall - remove parse-sf-buffers configuration
+#
+
+echo "[parse-sf-buffers] uninstall: nothing to remove."

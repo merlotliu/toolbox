@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# parse-sf-buffers setup - initialize parse-sf-buffers configuration
+#
+
+echo "[parse-sf-buffers] setup: nothing to configure."

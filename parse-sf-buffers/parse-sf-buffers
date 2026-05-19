@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""
+Parse SurfaceFlinger dump and report Graphics Buffer usage per process or layer.
+
+Parses two sections from the dump:
+  1. GraphicBufferAllocator buffers  (system-allocated, FramebufferSurface etc.)
+  2. Imported gralloc buffers        (app-allocated, contains process names)
+
+Usage:
+    python3 parse_sf_buffers.py <surfaceflinger_dump.log>
+    python3 parse_sf_buffers.py <surfaceflinger_dump.log> --by process
+    python3 parse_sf_buffers.py <surfaceflinger_dump.log> --by layer
+    python3 parse_sf_buffers.py <surfaceflinger_dump.log> --top 20
+    python3 parse_sf_buffers.py <surfaceflinger_dump.log> --sort count
+    python3 parse_sf_buffers.py <surfaceflinger_dump.log> --csv output.csv
+"""
+
+import re
+import sys
+import argparse
+from collections import defaultdict
+
+# GraphicBufferAllocator line:
+# 0xHANDLE | SIZE KiB | W (Stride) x H | Layers | Format | Usage | Requestor
+GBA_RE = re.compile(
+    r'^(0x[0-9a-fA-F]+)\s*\|\s*([\d.]+)\s*KiB\s*\|.+\|\s*(.+)$'
+)
+
+# Imported gralloc buffer line:
+# + name:LAYERNAME, id:ID, size:SIZE KiB, ...
+GRALLOC_RE = re.compile(
+    r'^\+\s+name:([^,]+),\s+id:\d+,\s+size:([\d.]+)KiB'
+)
+
+
+def extract_process(layer_name):
+    """Extract process/package name from a SurfaceFlinger layer name."""
+    # VRI[ActivityName@com.package.name]#N(BLAST Consumer)N
+    m = re.search(r'@([a-z][a-z0-9_.]+)', layer_name)
+    if m:
+        return m.group(1)
+    # HASH SurfaceView[com.package.name/ActivityName]#N
+    m = re.search(r'SurfaceView\[([^/\]]+)/[^\]]*\]', layer_name)
+    if m:
+        return m.group(1)
+    # HASH SurfaceView[layer_name]#N  (no package)
+    m = re.search(r'SurfaceView\[([^\]]+)\]', layer_name)
+    if m:
+        return m.group(1)
+    # Wallpaper#N, ColorFade#N, FramebufferSurface, screenshot, etc.
+    m = re.match(r'^([A-Za-z][A-Za-z0-9_]+)(#|\Z)', layer_name)
+    if m:
+        return m.group(1)
+    return layer_name
+
+
+def make_stats():
+    return defaultdict(lambda: {'count': 0, 'total_kib': 0.0})
+
+
+def parse(log_path):
+    gba_by_layer   = make_stats()
+    gba_by_process = make_stats()
+    imp_by_layer   = make_stats()
+    imp_by_process = make_stats()
+    in_gba = False
+    in_gralloc = False
+
+    with open(log_path, 'r', errors='replace') as f:
+        for line in f:
+            line = line.rstrip()
+            if 'GraphicBufferAllocator buffers:' in line:
+                in_gba = True
+                in_gralloc = False
+                continue
+            if 'Imported gralloc buffers:' in line:
+                in_gralloc = True
+                in_gba = False
+                continue
+
+            if in_gba:
+                m = GBA_RE.match(line.strip())
+                if m:
+                    size_kib = float(m.group(2))
+                    requestor = m.group(3).strip()
+                    gba_by_layer[requestor]['count'] += 1
+                    gba_by_layer[requestor]['total_kib'] += size_kib
+                    gba_by_process[requestor]['count'] += 1
+                    gba_by_process[requestor]['total_kib'] += size_kib
+                elif line.startswith('Total allocated'):
+                    in_gba = False
+
+            elif in_gralloc:
+                m = GRALLOC_RE.match(line.strip())
+                if m:
+                    layer_name = m.group(1).strip()
+                    size_kib = float(m.group(2))
+                    process = extract_process(layer_name)
+                    imp_by_layer[layer_name]['count'] += 1
+                    imp_by_layer[layer_name]['total_kib'] += size_kib
+                    imp_by_process[process]['count'] += 1
+                    imp_by_process[process]['total_kib'] += size_kib
+
+    return gba_by_layer, gba_by_process, imp_by_layer, imp_by_process
+
+
+def print_table(rows, total_count, total_kib, name_header='Name'):
+    col = 60
+    header = f"{name_header:<{col}} {'Count':>6} {'Total (KiB)':>14} {'Total (MiB)':>12}"
+    sep = '-' * (col + 36)
+    print(header)
+    print(sep)
+    for name, d in rows:
+        print(f"{name:<{col}} {d['count']:>6} {d['total_kib']:>14.2f} {d['total_kib']/1024:>12.2f}")
+    print(sep)
+    print(f"{'TOTAL':<{col}} {total_count:>6} {total_kib:>14.2f} {total_kib/1024:>12.2f}")
+
+
+def write_csv(rows, total_count, total_kib, csv_path, name_header='Name'):
+    import csv
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow([name_header, 'Count', 'Total (KiB)', 'Total (MiB)'])
+        for name, d in rows:
+            w.writerow([name, d['count'], f"{d['total_kib']:.2f}", f"{d['total_kib']/1024:.2f}"])
+        w.writerow(['TOTAL', total_count, f"{total_kib:.2f}", f"{total_kib/1024:.2f}"])
+    print(f"CSV saved to: {csv_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Analyze Graphics Buffer usage from a SurfaceFlinger dump.')
+    parser.add_argument('log', help='Path to surfaceflinger dump log file')
+    parser.add_argument('--by', choices=['process', 'layer'], default='process',
+                        help='Group by process (default) or layer name')
+    parser.add_argument('--sort', choices=['mem', 'count'], default='mem',
+                        help='Sort by memory (default) or buffer count')
+    parser.add_argument('--top', type=int, default=0,
+                        help='Show only top N entries (0 = all)')
+    parser.add_argument('--csv', metavar='FILE', default='',
+                        help='Also write results to a CSV file')
+    args = parser.parse_args()
+
+    gba_by_layer, gba_by_process, imp_by_layer, imp_by_process = parse(args.log)
+
+    if not gba_by_layer and not imp_by_layer:
+        print("No buffer entries found. Is this a valid SurfaceFlinger dump?", file=sys.stderr)
+        sys.exit(1)
+
+    key_fn = (lambda x: x[1]['count']) if args.sort == 'count' else (lambda x: x[1]['total_kib'])
+    name_header = 'Process' if args.by == 'process' else 'Layer Name'
+
+    print(f"Source: {args.log}\n")
+
+    for section_label, stats in [
+        ('GraphicBufferAllocator buffers', gba_by_process if args.by == 'process' else gba_by_layer),
+        ('Imported gralloc buffers',       imp_by_process if args.by == 'process' else imp_by_layer),
+    ]:
+        if not stats:
+            print(f"=== {section_label} ===\n(no entries)\n")
+            continue
+        sorted_rows = sorted(stats.items(), key=key_fn, reverse=True)
+        total_count = sum(v['count'] for v in stats.values())
+        total_kib   = sum(v['total_kib'] for v in stats.values())
+        display_rows = sorted_rows[:args.top] if args.top > 0 else sorted_rows
+
+        print(f"=== {section_label} ===")
+        print(f"Group by: {args.by}  |  Unique entries: {len(stats)}  |  Total buffers: {total_count}  |  Total memory: {total_kib:.2f} KiB ({total_kib/1024:.2f} MiB)\n")
+        print_table(display_rows, total_count, total_kib, name_header)
+        print()
+
+        if args.csv:
+            csv_path = args.csv.replace('.csv', f'_{section_label.split()[0].lower()}.csv')
+            write_csv(sorted_rows, total_count, total_kib, csv_path, name_header)
+
+
+if __name__ == '__main__':
+    main()
