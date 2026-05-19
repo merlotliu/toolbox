@@ -4,7 +4,9 @@
 # toolbox - manage tools in this repository
 #
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do _self="$(readlink "$_self")"; done
+readonly SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 readonly REPO_DIR="$(dirname "$SCRIPT_DIR")"
 readonly BIN_DIR="$HOME/.local/bin"
 
