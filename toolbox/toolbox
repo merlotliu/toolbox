@@ -1,0 +1,124 @@
+#!/bin/bash
+
+#
+# toolbox - manage tools in this repository
+#
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_DIR="$(dirname "$SCRIPT_DIR")"
+readonly BIN_DIR="$HOME/.local/bin"
+
+show_usage() {
+    cat << USAGE
+toolbox - manage tools in this repository
+
+Usage: $(basename "$0") OPTION [ARGS]
+
+OPTIONS:
+    --list              List all tools with installation status
+    --setup             Run the repository setup script
+    --install <tool>    Install a specific tool
+    --uninstall <tool>  Uninstall a specific tool
+    -h, --help          Show this help message
+
+EXAMPLES:
+    toolbox --list
+    toolbox --install dbfetch
+    toolbox --uninstall dbfetch
+USAGE
+}
+
+cmd_list() {
+    local installed=0 not_installed=0
+    printf "%-32s %s\n" "TOOL" "STATUS"
+    printf "%-32s %s\n" "--------------------------------" "-------------"
+    for tool_dir in "$REPO_DIR"/*/; do
+        [ -d "$tool_dir" ] || continue
+        tool_name="$(basename "$tool_dir")"
+        tool_script="$tool_dir/$tool_name"
+        [ -x "$tool_script" ] || continue
+        link="$BIN_DIR/$tool_name"
+        if [ -L "$link" ] && [ "$(readlink "$link")" = "$tool_script" ]; then
+            printf "%-32s %s\n" "$tool_name" "installed"
+            ((installed++))
+        else
+            printf "%-32s %s\n" "$tool_name" "not installed"
+            ((not_installed++))
+        fi
+    done
+    echo ""
+    echo "installed: $installed  not installed: $not_installed"
+}
+
+cmd_install() {
+    local tool_name="$1"
+    local tool_dir="$REPO_DIR/$tool_name"
+    local tool_script="$tool_dir/$tool_name"
+
+    if [ ! -d "$tool_dir" ]; then
+        echo "Error: tool '$tool_name' not found." >&2
+        exit 1
+    fi
+    if [ ! -x "$tool_script" ]; then
+        echo "Error: no executable found at '$tool_script'." >&2
+        exit 1
+    fi
+
+    mkdir -p "$BIN_DIR"
+    ln -sf "$tool_script" "$BIN_DIR/$tool_name"
+    echo "[$tool_name] linked -> $BIN_DIR/$tool_name"
+
+    if [ -x "$tool_dir/setup" ]; then
+        echo "[$tool_name] running setup..."
+        "$tool_dir/setup"
+    fi
+}
+
+cmd_uninstall() {
+    local tool_name="$1"
+    local tool_dir="$REPO_DIR/$tool_name"
+    local link="$BIN_DIR/$tool_name"
+
+    if [ ! -d "$tool_dir" ]; then
+        echo "Error: tool '$tool_name' not found." >&2
+        exit 1
+    fi
+
+    if [ -x "$tool_dir/uninstall" ]; then
+        echo "[$tool_name] running uninstall..."
+        "$tool_dir/uninstall"
+    fi
+
+    if [ -L "$link" ]; then
+        rm "$link"
+        echo "[$tool_name] removed $link"
+    else
+        echo "[$tool_name] not installed, nothing to remove."
+    fi
+}
+
+[ $# -eq 0 ] && { show_usage; exit 1; }
+
+case "$1" in
+    --list)
+        cmd_list
+        ;;
+    --setup)
+        exec "$REPO_DIR/setup" "${@:2}"
+        ;;
+    --install)
+        [ -z "$2" ] && { echo "Error: --install requires a tool name." >&2; exit 1; }
+        cmd_install "$2"
+        ;;
+    --uninstall)
+        [ -z "$2" ] && { echo "Error: --uninstall requires a tool name." >&2; exit 1; }
+        cmd_uninstall "$2"
+        ;;
+    -h|--help)
+        show_usage
+        ;;
+    *)
+        echo "Error: unknown option: $1. Use -h for help." >&2
+        exit 1
+        ;;
+esac

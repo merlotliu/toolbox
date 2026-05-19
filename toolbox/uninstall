@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# toolbox uninstall - remove toolbox configuration
+#
+
+echo "[toolbox] uninstall: nothing to remove."
