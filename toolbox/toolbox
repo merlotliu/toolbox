@@ -41,7 +41,7 @@ cmd_list() {
         tool_script="$tool_dir/$tool_name"
         [ -x "$tool_script" ] || continue
         link="$BIN_DIR/$tool_name"
-        if [ -L "$link" ] && [ "$(readlink "$link")" = "$tool_script" ]; then
+        if [ -L "$link" ] && [ "$(readlink "$link" | tr -s /)" = "$tool_script" ]; then
             printf "%-32s %s\n" "$tool_name" "installed"
             ((installed++))
         else
