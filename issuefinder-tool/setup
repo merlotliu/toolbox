@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# issuefinder-tool setup - initialize issuefinder-tool configuration
+#
+
+echo "[issuefinder-tool] setup: nothing to configure."

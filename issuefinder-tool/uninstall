@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# issuefinder-tool uninstall - remove issuefinder-tool configuration
+#
+
+echo "[issuefinder-tool] uninstall: nothing to remove."
