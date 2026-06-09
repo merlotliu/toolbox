@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# adb-provision uninstall - remove adb-provision configuration
+#
+
+echo "[adb-provision] uninstall: nothing to remove."

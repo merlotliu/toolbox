@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# adb-provision setup - initialize adb-provision configuration
+#
+
+echo "[adb-provision] setup: nothing to configure."
