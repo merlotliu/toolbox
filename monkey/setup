@@ -1,0 +1,8 @@
+#!/bin/bash
+
+#
+# monkey setup - initialize monkey configuration
+#
+
+echo "[monkey] setup: nothing to configure."
+echo "[monkey] blacklist.txt is bundled at $(dirname "${BASH_SOURCE[0]}")/blacklist.txt"
