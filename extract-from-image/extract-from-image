@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+"""
+extract_from_image.py — Extract files from Android/Linux firmware images.
+
+Supported formats:
+  - erofs (raw)
+  - ext4 (raw)  — requires debugfs
+  - Android sparse image wrapping ext4 — requires debugfs
+
+Usage:
+  python3 extract_from_image.py -t libGSLKernel.so -d ./images
+  python3 extract_from_image.py -t libGSLKernel.so -i machine-image.erofs -o /tmp/out
+"""
+
+import argparse
+import mmap
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+
+# ---------------------------------------------------------------------------
+# Format detection
+# ---------------------------------------------------------------------------
+
+EROFS_MAGIC      = 0xE0F5E1E2
+SPARSE_MAGIC     = 0xED26FF3A
+EXT4_MAGIC       = 0xEF53          # at byte offset 0x438 in raw ext4
+EROFS_SUPER_OFF  = 1024
+EXT4_MAGIC_OFF   = 0x438
+
+
+def detect_format(path):
+    """Return 'erofs', 'sparse', 'ext4', or None."""
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(4)
+            if len(head) < 4:
+                return None
+            magic4 = struct.unpack_from('<I', head, 0)[0]
+            if magic4 == SPARSE_MAGIC:
+                return 'sparse'
+            f.seek(EROFS_SUPER_OFF)
+            sb = f.read(4)
+            if len(sb) == 4 and struct.unpack_from('<I', sb, 0)[0] == EROFS_MAGIC:
+                return 'erofs'
+            f.seek(EXT4_MAGIC_OFF)
+            sb = f.read(2)
+            if len(sb) == 2 and struct.unpack_from('<H', sb, 0)[0] == EXT4_MAGIC:
+                return 'ext4'
+    except OSError:
+        pass
+    return None
+
+
+def candidate_images(directory, specific_image):
+    """Yield (path, fmt) for every image worth searching."""
+    if specific_image:
+        paths = [specific_image if os.path.isabs(specific_image)
+                 else os.path.join(directory or '.', specific_image)]
+    else:
+        if not directory:
+            print("ERROR: specify -d <dir> or -i <image>", file=sys.stderr)
+            sys.exit(1)
+        paths = [os.path.join(directory, f)
+                 for f in sorted(os.listdir(directory))
+                 if os.path.isfile(os.path.join(directory, f))]
+
+    for p in paths:
+        fmt = detect_format(p)
+        if fmt:
+            yield p, fmt
+
+
+# ---------------------------------------------------------------------------
+# erofs parser
+# ---------------------------------------------------------------------------
+
+BLKSIZE = 4096
+
+
+def _xattr_size(cnt):
+    return (12 + (cnt - 1) * 4) if cnt else 0
+
+
+def _read_inode(mm, nid, meta_blkaddr):
+    off = meta_blkaddr * BLKSIZE + nid * 32
+    i_format      = struct.unpack_from('<H', mm, off)[0]
+    version       = i_format & 1
+    datalayout    = (i_format >> 1) & 7
+    xattr_cnt     = struct.unpack_from('<H', mm, off + 2)[0]
+    i_mode        = struct.unpack_from('<H', mm, off + 4)[0]
+    # blkaddr is at offset 16 in BOTH compact and extended inodes
+    if version == 0:   # compact: 32 bytes
+        i_size    = struct.unpack_from('<I', mm, off + 8)[0]
+        i_blkaddr = struct.unpack_from('<I', mm, off + 16)[0]
+        inode_sz  = 32
+    else:              # extended: 64 bytes
+        i_size    = struct.unpack_from('<Q', mm, off + 8)[0]
+        i_blkaddr = struct.unpack_from('<I', mm, off + 16)[0]
+        inode_sz  = 64
+    data_off = off + inode_sz + _xattr_size(xattr_cnt)
+    return {
+        'mode': i_mode,
+        'size': i_size,
+        'blkaddr': i_blkaddr,
+        'dl': datalayout,
+        'data_off': data_off,
+    }
+
+
+def _read_data(mm, inode):
+    """Read full file/directory data respecting datalayout."""
+    dl       = inode['dl']
+    size     = inode['size']
+    blkaddr  = inode['blkaddr']
+    data_off = inode['data_off']
+
+    if dl == 0:  # FLAT_PLAIN — all blocks at blkaddr
+        return mm[blkaddr * BLKSIZE: blkaddr * BLKSIZE + size]
+
+    if dl == 2:  # FLAT_INLINE — n full blocks at blkaddr, tail inline after inode
+        n_full = size // BLKSIZE
+        tail   = size % BLKSIZE
+        parts  = []
+        if n_full > 0 and blkaddr not in (0, 0xFFFFFFFF):
+            parts.append(mm[blkaddr * BLKSIZE: (blkaddr + n_full) * BLKSIZE])
+        if tail > 0:
+            parts.append(mm[data_off: data_off + tail])
+        return b''.join(parts)
+
+    # Fallback: try inline
+    return mm[data_off: data_off + size]
+
+
+def _parse_dirents(data):
+    """Parse multi-block erofs directory data → {name: nid}."""
+    entries = {}
+    pos = 0
+    while pos < len(data):
+        chunk = data[pos: pos + BLKSIZE]
+        if len(chunk) < 12:
+            break
+        first_nameoff = struct.unpack_from('<H', chunk, 8)[0]
+        if not first_nameoff or first_nameoff % 12:
+            break
+        n = first_nameoff // 12
+        for i in range(n):
+            d = i * 12
+            if d + 12 > len(chunk):
+                break
+            nid_e   = struct.unpack_from('<Q', chunk, d)[0]
+            nameoff = struct.unpack_from('<H', chunk, d + 8)[0]
+            if i + 1 < n:
+                next_off = struct.unpack_from('<H', chunk, (i + 1) * 12 + 8)[0]
+            else:
+                next_off = min(BLKSIZE, len(chunk))
+            raw = chunk[nameoff:next_off]
+            null = raw.find(b'\x00')
+            if null >= 0:
+                raw = raw[:null]
+            name = raw.decode('utf-8', errors='replace')
+            if name:
+                entries[name] = nid_e
+        pos += BLKSIZE
+    return entries
+
+
+S_IFMT  = 0xF000
+S_IFDIR = 0x4000
+S_IFLNK = 0xA000
+S_IFREG = 0x8000
+
+
+def _resolve_erofs(mm, root_nid, meta_blkaddr, parts, depth=0):
+    """Walk path parts from root, follow symlinks. Returns (nid, inode) or (None, None)."""
+    if depth > 16:
+        return None, None
+    nid = root_nid
+    for part in parts:
+        inode = _read_inode(mm, nid, meta_blkaddr)
+        ft = inode['mode'] & S_IFMT
+        if ft == S_IFLNK:
+            target = _read_data(mm, inode)
+            null = target.find(b'\x00')
+            if null >= 0:
+                target = target[:null]
+            target = target.decode('utf-8', errors='replace')
+            target_parts = [p for p in target.strip('/').split('/') if p]
+            nid, inode = _resolve_erofs(mm, root_nid, meta_blkaddr,
+                                        target_parts, depth + 1)
+            if nid is None:
+                return None, None
+            ft = inode['mode'] & S_IFMT
+        if ft != S_IFDIR:
+            return None, None
+        entries = _parse_dirents(_read_data(mm, inode))
+        if part not in entries:
+            return None, None
+        nid = entries[part]
+    return nid, _read_inode(mm, nid, meta_blkaddr)
+
+
+def _search_erofs(mm, root_nid, meta_blkaddr, target_name):
+    """
+    BFS the erofs directory tree for any file whose basename == target_name.
+    Returns list of (found_path, inode).
+    """
+    results = []
+    # queue of (nid, path_str)
+    queue = [(root_nid, '')]
+    visited = set()
+    while queue:
+        nid, path = queue.pop(0)
+        if nid in visited:
+            continue
+        visited.add(nid)
+        inode = _read_inode(mm, nid, meta_blkaddr)
+        ft = inode['mode'] & S_IFMT
+        if ft == S_IFLNK:
+            continue  # skip symlinks in BFS to avoid loops
+        if ft != S_IFDIR:
+            continue
+        try:
+            entries = _parse_dirents(_read_data(mm, inode))
+        except Exception:
+            continue
+        for name, child_nid in entries.items():
+            if name in ('.', '..'):
+                continue
+            child_path = path + '/' + name
+            if name == target_name:
+                child_inode = _read_inode(mm, child_nid, meta_blkaddr)
+                if (child_inode['mode'] & S_IFMT) == S_IFREG:
+                    results.append((child_path, child_inode))
+            else:
+                child_inode = _read_inode(mm, child_nid, meta_blkaddr)
+                if (child_inode['mode'] & S_IFMT) == S_IFDIR:
+                    queue.append((child_nid, child_path))
+    return results
+
+
+def extract_erofs(image_path, target_name, output_dir):
+    """
+    Search for target_name in an erofs image and extract all matches.
+    Returns list of output file paths written.
+    """
+    written = []
+    with open(image_path, 'rb') as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            # Parse superblock
+            sb = mm[EROFS_SUPER_OFF: EROFS_SUPER_OFF + 128]
+            blkszbits    = sb[12]
+            root_nid     = struct.unpack_from('<H', sb, 14)[0]
+            meta_blkaddr = struct.unpack_from('<I', sb, 40)[0]
+
+            global BLKSIZE
+            BLKSIZE = 1 << blkszbits
+
+            results = _search_erofs(mm, root_nid, meta_blkaddr, target_name)
+            if not results:
+                return written
+
+            # Deduplicate by blkaddr+size (symlinked duplicates)
+            seen = set()
+            for found_path, inode in results:
+                key = (inode['blkaddr'], inode['size'])
+                if key in seen:
+                    print(f"  [skip duplicate] {found_path}")
+                    continue
+                seen.add(key)
+
+                data = _read_data(mm, inode)
+                # Build output filename: if multiple, suffix with sanitized path
+                if len(seen) == 1 and len(results) == 1:
+                    out_name = target_name
+                else:
+                    safe = found_path.lstrip('/').replace('/', '_')
+                    out_name = safe
+
+                out_path = os.path.join(output_dir, out_name)
+                with open(out_path, 'wb') as out:
+                    out.write(data)
+                print(f"  extracted {found_path} -> {out_path}  ({len(data)} bytes)")
+                written.append(out_path)
+        finally:
+            mm.close()
+    return written
+
+
+# ---------------------------------------------------------------------------
+# Android sparse image → raw bytes (in-memory iterator)
+# ---------------------------------------------------------------------------
+
+SPARSE_FILE_HDR_SZ  = 28
+SPARSE_CHUNK_HDR_SZ = 12
+CHUNK_RAW    = 0xCAC1
+CHUNK_FILL   = 0xCAC2
+CHUNK_DONT   = 0xCAC3
+CHUNK_CRC32  = 0xCAC4
+
+
+def _sparse_to_raw_tmpfile(sparse_path):
+    """Convert Android sparse image to a raw temp file. Returns temp path."""
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.raw')
+    try:
+        with open(sparse_path, 'rb') as f:
+            hdr = f.read(SPARSE_FILE_HDR_SZ)
+            (magic, major, minor, file_hdr_sz, chunk_hdr_sz,
+             blk_sz, total_blks, total_chunks, _) = struct.unpack_from(
+                '<IHHHHIIII', hdr, 0)
+            if magic != SPARSE_MAGIC:
+                raise ValueError("not a sparse image")
+            # Seek past any extra header bytes
+            f.seek(file_hdr_sz)
+            for _ in range(total_chunks):
+                ch = f.read(chunk_hdr_sz)
+                chunk_type, _, chunk_sz, total_sz = struct.unpack_from('<HHII', ch, 0)
+                data_sz = total_sz - chunk_hdr_sz
+                # Seek past any extra chunk header bytes
+                f.seek(chunk_hdr_sz - 12, 1) if chunk_hdr_sz > 12 else None
+                if chunk_type == CHUNK_RAW:
+                    tmp.write(f.read(data_sz))
+                elif chunk_type == CHUNK_FILL:
+                    fill = f.read(4)
+                    tmp.write(fill * (chunk_sz * blk_sz // 4))
+                elif chunk_type == CHUNK_DONT:
+                    tmp.write(b'\x00' * (chunk_sz * blk_sz))
+                elif chunk_type == CHUNK_CRC32:
+                    f.read(data_sz)
+                else:
+                    f.read(data_sz)
+        tmp.flush()
+        return tmp.name
+    except Exception:
+        tmp.close()
+        os.unlink(tmp.name)
+        raise
+    finally:
+        tmp.close()
+
+
+# ---------------------------------------------------------------------------
+# ext4 extraction via debugfs
+# ---------------------------------------------------------------------------
+
+def _debugfs_available():
+    return shutil.which('debugfs') is not None
+
+
+def _debugfs_find(image_path, target_name):
+    """Use debugfs to find target_name in ext4 image. Returns list of paths."""
+    try:
+        result = subprocess.run(
+            ['debugfs', '-R', f'ls -r /', image_path],
+            capture_output=True, text=True, timeout=120
+        )
+        paths = []
+        for line in result.stdout.splitlines():
+            if target_name in line:
+                # crude: extract path tokens
+                paths.append(line.strip())
+        return paths
+    except Exception:
+        return []
+
+
+def _debugfs_dump(image_path, device_path, out_path):
+    """Extract file at device_path from ext4 image to out_path."""
+    try:
+        result = subprocess.run(
+            ['debugfs', '-R', f'dump {device_path} {out_path}', image_path],
+            capture_output=True, timeout=60
+        )
+        return result.returncode == 0 and os.path.exists(out_path)
+    except Exception:
+        return False
+
+
+def _find_in_ext4(image_path, target_name):
+    """
+    Search for target_name in ext4 image using debugfs.
+    Returns list of device-side paths.
+    """
+    if not _debugfs_available():
+        print("  [skip] debugfs not available for ext4 image", file=sys.stderr)
+        return []
+    try:
+        result = subprocess.run(
+            ['debugfs', '-R', 'ls -r /', image_path],
+            capture_output=True, text=True, timeout=300
+        )
+        lines = result.stdout + result.stderr
+        found = []
+        # debugfs 'ls -r' doesn't give full paths easily; use find instead
+        result2 = subprocess.run(
+            ['debugfs', image_path, '-f', '/dev/stdin'],
+            input=f'find / -name {target_name}\n',
+            capture_output=True, text=True, timeout=300
+        )
+        for line in (result2.stdout + result2.stderr).splitlines():
+            line = line.strip()
+            if line.startswith('/') and target_name in line:
+                found.append(line)
+        return found
+    except Exception as e:
+        print(f"  [ext4 search error] {e}", file=sys.stderr)
+        return []
+
+
+def extract_ext4(image_path, target_name, output_dir, is_sparse=False):
+    """Extract target_name from a raw or sparse ext4 image."""
+    written = []
+    raw_path = image_path
+    tmp_path = None
+
+    try:
+        if is_sparse:
+            print(f"  converting sparse -> raw (temp file)...")
+            tmp_path = _sparse_to_raw_tmpfile(image_path)
+            raw_path = tmp_path
+
+        found_paths = _find_in_ext4(raw_path, target_name)
+        if not found_paths:
+            return written
+
+        seen = set()
+        for dev_path in found_paths:
+            if dev_path in seen:
+                continue
+            seen.add(dev_path)
+            safe = dev_path.lstrip('/').replace('/', '_')
+            out_path = os.path.join(output_dir, safe)
+            if _debugfs_dump(raw_path, dev_path, out_path):
+                sz = os.path.getsize(out_path)
+                print(f"  extracted {dev_path} -> {out_path}  ({sz} bytes)")
+                written.append(out_path)
+            else:
+                print(f"  [failed] could not dump {dev_path}", file=sys.stderr)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    return written
+
+
+# ---------------------------------------------------------------------------
+# Quick pre-scan: skip images that don't contain the target string at all
+# ---------------------------------------------------------------------------
+
+def quick_scan(image_path, target_name):
+    """Return True if target_name byte string appears anywhere in the image."""
+    needle = target_name.encode()
+    chunk_size = 2 * 1024 * 1024
+    overlap = len(needle) - 1
+    buf = b''
+    try:
+        with open(image_path, 'rb') as f:
+            while True:
+                new = f.read(chunk_size)
+                if not new:
+                    break
+                data = buf + new
+                if needle in data:
+                    return True
+                buf = data[-overlap:] if len(data) >= overlap else data
+    except OSError:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def _do_extract(image_path, fmt, target, output_dir):
+    """Run the appropriate extractor for a single image. Returns list of paths."""
+    if fmt == 'erofs':
+        return extract_erofs(image_path, target, output_dir)
+    elif fmt == 'ext4':
+        return extract_ext4(image_path, target, output_dir, is_sparse=False)
+    elif fmt == 'sparse':
+        return extract_ext4(image_path, target, output_dir, is_sparse=True)
+    return []
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Extract a file from Android/Linux firmware images.')
+    parser.add_argument('-d', '--directory',
+                        help='Directory containing image files to search')
+    parser.add_argument('-i', '--image',
+                        help='Specific image file (skips interactive selection)')
+    parser.add_argument('-t', '--target', required=True,
+                        help='Filename to extract, e.g. libGSLKernel.so')
+    parser.add_argument('-o', '--output', default='.',
+                        help='Output directory (default: current directory)')
+    parser.add_argument('--no-prescan', action='store_true',
+                        help='Skip binary pre-scan (slower but thorough)')
+    args = parser.parse_args()
+
+    os.makedirs(args.output, exist_ok=True)
+    target = os.path.basename(args.target)
+
+    # ── Phase 1: scan all candidates, collect hits ──────────────────────────
+    all_candidates = list(candidate_images(args.directory, args.image))
+    hits = []   # [(image_path, fmt)]
+
+    print(f"Scanning for '{target}'...\n")
+    for image_path, fmt in all_candidates:
+        img_name = os.path.basename(image_path)
+        sys.stdout.write(f"  [{fmt:6s}] {img_name} ... ")
+        sys.stdout.flush()
+
+        if args.no_prescan or quick_scan(image_path, target):
+            print("HIT")
+            hits.append((image_path, fmt))
+        else:
+            print("not found")
+
+    print()
+
+    if not hits:
+        print(f"'{target}' was not found in any image.")
+        return
+
+    # ── Phase 2: if -i was given, skip selection ─────────────────────────────
+    if args.image:
+        selected = hits
+    elif len(hits) == 1:
+        print(f"Found in 1 image: {os.path.basename(hits[0][0])}")
+        selected = hits
+    else:
+        # Interactive selection
+        print(f"Found in {len(hits)} image(s):")
+        for idx, (p, fmt) in enumerate(hits, 1):
+            print(f"  [{idx}] [{fmt:6s}] {os.path.basename(p)}")
+        print(f"  [a] all of the above")
+        print()
+        while True:
+            raw = input("Select image(s) to extract from (e.g. 1  or  1,3  or  a): ").strip()
+            if raw.lower() == 'a':
+                selected = hits
+                break
+            try:
+                indices = [int(x.strip()) for x in raw.split(',')]
+                if all(1 <= i <= len(hits) for i in indices):
+                    selected = [hits[i - 1] for i in indices]
+                    break
+            except ValueError:
+                pass
+            print(f"  Invalid input, please enter numbers between 1-{len(hits)} or 'a'.")
+
+    # ── Phase 3: extract from selected images ────────────────────────────────
+    print()
+    total_written = []
+    for image_path, fmt in selected:
+        img_name = os.path.basename(image_path)
+        print(f"Extracting from [{fmt}] {img_name} ...")
+        written = _do_extract(image_path, fmt, target, args.output)
+        if not written:
+            print(f"  '{target}' not found (binary hit was a string reference, not a filesystem entry)")
+        total_written.extend(written)
+
+    print()
+    if total_written:
+        print(f"Done. {len(total_written)} file(s) written:")
+        for p in total_written:
+            print(f"  {p}")
+    else:
+        print(f"Done. No files extracted.")
+
+
+if __name__ == '__main__':
+    main()

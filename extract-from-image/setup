@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# extract-from-image setup - initialize extract-from-image configuration
+#
+
+echo "[extract-from-image] setup: nothing to configure."
