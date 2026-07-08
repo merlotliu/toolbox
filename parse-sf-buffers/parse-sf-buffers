@@ -27,9 +27,9 @@ GBA_RE = re.compile(
 )
 
 # Imported gralloc buffer line:
-# + name:LAYERNAME, id:ID, size:SIZE KiB, ...
+# + name:LAYERNAME, id:ID, size:SIZE KiB, w/h:WxH, ...
 GRALLOC_RE = re.compile(
-    r'^\+\s+name:([^,]+),\s+id:\d+,\s+size:([\d.]+)KiB'
+    r'^\+\s+name:([^,]+),\s+id:\d+,\s+size:([\d.]+)KiB,\s+w/h:(\d+x\d+)'
 )
 
 
@@ -85,21 +85,24 @@ def print_hierarchical_table(proc_groups, total_count, total_kib):
     layer_col = max(len('Layer Name'),
                     max(len(n) for _, layers in proc_groups for n, _ in layers))
 
+    wh_col = max(len('w/h'),
+                 max((len(d.get('wh', '')) for _, layers in proc_groups for _, d in layers), default=0))
     header = (f"{'Process':<{proc_col}}  {'Layer Name':<{layer_col}}"
-              f"  {'Count':>6}  {'Total (KiB)':>14}  {'Total (MiB)':>12}")
+              f"  {'w/h':<{wh_col}}  {'Count':>6}  {'Total (KiB)':>14}  {'Total (MiB)':>12}")
     sep = '-' * len(header)
 
-    blank_nums = f"  {'':>6}  {'':>14}  {'':>12}"
+    blank_nums = f"  {'':>{wh_col}}  {'':>6}  {'':>14}  {'':>12}"
     print(header)
     print(sep)
     for proc, layers in proc_groups:
         print(f"{proc:<{proc_col}}  {'-':<{layer_col}}{blank_nums}")
         for name, d in layers:
+            wh = d.get('wh', '')
             print(f"{'':<{proc_col}}  {name:<{layer_col}}"
-                  f"  {d['count']:>6}  {d['total_kib']:>14.2f}  {d['total_kib']/1024:>12.2f}")
+                  f"  {wh:<{wh_col}}  {d['count']:>6}  {d['total_kib']:>14.2f}  {d['total_kib']/1024:>12.2f}")
     print(sep)
     print(f"{'TOTAL':<{proc_col}}  {'':<{layer_col}}"
-          f"  {total_count:>6}  {total_kib:>14.2f}  {total_kib/1024:>12.2f}")
+          f"  {'':>{wh_col}}  {total_count:>6}  {total_kib:>14.2f}  {total_kib/1024:>12.2f}")
 
 
 def parse(log_path):
@@ -139,9 +142,11 @@ def parse(log_path):
                 if m:
                     layer_name = m.group(1).strip()
                     size_kib = float(m.group(2))
+                    wh = m.group(3)
                     process = extract_process(layer_name)
                     imp_by_layer[layer_name]['count'] += 1
                     imp_by_layer[layer_name]['total_kib'] += size_kib
+                    imp_by_layer[layer_name]['wh'] = wh
                     imp_by_process[process]['count'] += 1
                     imp_by_process[process]['total_kib'] += size_kib
 
