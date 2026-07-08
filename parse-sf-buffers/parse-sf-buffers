@@ -86,21 +86,20 @@ def print_hierarchical_table(proc_groups, total_count, total_kib):
                     max(len(n) for _, layers in proc_groups for n, _ in layers))
 
     header = (f"{'Process':<{proc_col}}  {'Layer Name':<{layer_col}}"
-              f"  {'Size (KiB)':>12}  {'Count':>6}  {'Total (KiB)':>14}  {'Total (MiB)':>12}")
+              f"  {'Count':>6}  {'Total (KiB)':>14}  {'Total (MiB)':>12}")
     sep = '-' * len(header)
 
-    blank_nums = f"  {'':>12}  {'':>6}  {'':>14}  {'':>12}"
+    blank_nums = f"  {'':>6}  {'':>14}  {'':>12}"
     print(header)
     print(sep)
     for proc, layers in proc_groups:
         print(f"{proc:<{proc_col}}  {'-':<{layer_col}}{blank_nums}")
         for name, d in layers:
-            size_kib = d['total_kib'] / d['count'] if d['count'] else 0.0
             print(f"{'':<{proc_col}}  {name:<{layer_col}}"
-                  f"  {size_kib:>12.2f}  {d['count']:>6}  {d['total_kib']:>14.2f}  {d['total_kib']/1024:>12.2f}")
+                  f"  {d['count']:>6}  {d['total_kib']:>14.2f}  {d['total_kib']/1024:>12.2f}")
     print(sep)
     print(f"{'TOTAL':<{proc_col}}  {'':<{layer_col}}"
-          f"  {'':>12}  {total_count:>6}  {total_kib:>14.2f}  {total_kib/1024:>12.2f}")
+          f"  {total_count:>6}  {total_kib:>14.2f}  {total_kib/1024:>12.2f}")
 
 
 def parse(log_path):
