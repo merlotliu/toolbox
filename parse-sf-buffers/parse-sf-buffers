@@ -58,6 +58,50 @@ def make_stats():
     return defaultdict(lambda: {'count': 0, 'total_kib': 0.0})
 
 
+def build_process_groups(rows, key_fn, process_fn):
+    """Group rows by process and return an ordered list of (proc, sorted_layers).
+
+    Groups are ordered by number of distinct layers descending, ties broken by
+    aggregate memory.  Within each group layers are sorted by key_fn descending.
+    """
+    groups = {}
+    for name, d in rows:
+        proc = process_fn(name)
+        groups.setdefault(proc, []).append((name, d))
+
+    def group_key(proc):
+        layers = groups[proc]
+        return (len(layers), sum(d['total_kib'] for _, d in layers))
+
+    sorted_procs = sorted(groups, key=group_key, reverse=True)
+    return [(proc, sorted(groups[proc], key=key_fn, reverse=True))
+            for proc in sorted_procs]
+
+
+def print_hierarchical_table(proc_groups, total_count, total_kib):
+    """Two-level table: a process summary row followed by indented layer rows."""
+    proc_col  = max(len('Process'),
+                    max(len(p) for p, _ in proc_groups))
+    layer_col = max(len('Layer Name'),
+                    max(len(n) for _, layers in proc_groups for n, _ in layers))
+
+    header = (f"{'Process':<{proc_col}}  {'Layer Name':<{layer_col}}"
+              f"  {'Count':>6}  {'Total (KiB)':>14}  {'Total (MiB)':>12}")
+    sep = '-' * len(header)
+
+    blank_nums = f"  {'':>6}  {'':>14}  {'':>12}"
+    print(header)
+    print(sep)
+    for proc, layers in proc_groups:
+        print(f"{proc:<{proc_col}}  {'-':<{layer_col}}{blank_nums}")
+        for name, d in layers:
+            print(f"{'':<{proc_col}}  {name:<{layer_col}}"
+                  f"  {d['count']:>6}  {d['total_kib']:>14.2f}  {d['total_kib']/1024:>12.2f}")
+    print(sep)
+    print(f"{'TOTAL':<{proc_col}}  {'':<{layer_col}}"
+          f"  {total_count:>6}  {total_kib:>14.2f}  {total_kib/1024:>12.2f}")
+
+
 def parse(log_path):
     gba_by_layer   = make_stats()
     gba_by_process = make_stats()
@@ -105,15 +149,16 @@ def parse(log_path):
 
 
 def print_table(rows, total_count, total_kib, name_header='Name'):
-    col = 60
-    header = f"{name_header:<{col}} {'Count':>6} {'Total (KiB)':>14} {'Total (MiB)':>12}"
-    sep = '-' * (col + 36)
+    # Dynamic name column: wide enough for the longest entry, minimum 40.
+    name_col = max(40, len(name_header), max((len(name) for name, _ in rows), default=0))
+    header = f"{name_header:<{name_col}} {'Count':>6} {'Total (KiB)':>14} {'Total (MiB)':>12}"
+    sep = '-' * (name_col + 36)
     print(header)
     print(sep)
     for name, d in rows:
-        print(f"{name:<{col}} {d['count']:>6} {d['total_kib']:>14.2f} {d['total_kib']/1024:>12.2f}")
+        print(f"{name:<{name_col}} {d['count']:>6} {d['total_kib']:>14.2f} {d['total_kib']/1024:>12.2f}")
     print(sep)
-    print(f"{'TOTAL':<{col}} {total_count:>6} {total_kib:>14.2f} {total_kib/1024:>12.2f}")
+    print(f"{'TOTAL':<{name_col}} {total_count:>6} {total_kib:>14.2f} {total_kib/1024:>12.2f}")
 
 
 def write_csv(rows, total_count, total_kib, csv_path, name_header='Name'):
@@ -161,11 +206,22 @@ def main():
         sorted_rows = sorted(stats.items(), key=key_fn, reverse=True)
         total_count = sum(v['count'] for v in stats.values())
         total_kib   = sum(v['total_kib'] for v in stats.values())
-        display_rows = sorted_rows[:args.top] if args.top > 0 else sorted_rows
+
+        use_hierarchy = (args.by == 'layer' and 'gralloc' in section_label.lower())
 
         print(f"=== {section_label} ===")
         print(f"Group by: {args.by}  |  Unique entries: {len(stats)}  |  Total buffers: {total_count}  |  Total memory: {total_kib:.2f} KiB ({total_kib/1024:.2f} MiB)\n")
-        print_table(display_rows, total_count, total_kib, name_header)
+
+        if use_hierarchy:
+            proc_groups = build_process_groups(sorted_rows, key_fn, extract_process)
+            if args.top > 0:
+                # Trim to top N layers across all groups
+                flat = [(n, d) for _, layers in proc_groups for n, d in layers][:args.top]
+                proc_groups = build_process_groups(flat, key_fn, extract_process)
+            print_hierarchical_table(proc_groups, total_count, total_kib)
+        else:
+            display_rows = sorted_rows[:args.top] if args.top > 0 else sorted_rows
+            print_table(display_rows, total_count, total_kib, name_header)
         print()
 
         if args.csv:
