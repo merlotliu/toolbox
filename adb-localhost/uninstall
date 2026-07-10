@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# adb-localhost uninstall - remove adb-localhost configuration
+#
+
+echo "[adb-localhost] uninstall: nothing to remove."

@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# adb-localhost setup - initialize adb-localhost configuration
+#
+
+echo "[adb-localhost] setup: nothing to configure."
