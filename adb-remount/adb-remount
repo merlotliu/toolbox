@@ -1,0 +1,66 @@
+#!/bin/bash
+
+#
+# adb-remount - adb root + adb remount
+#
+
+show_usage() {
+    cat << USAGE
+adb-remount - adb root + adb remount
+
+Usage: $(basename "$0") [-s <serial>] [-h]
+
+OPTIONS:
+    -s <serial>   指定设备序列号 (未指定时自动检测或交互选择)
+    -h            显示帮助信息
+
+EXAMPLES:
+    $(basename "$0")
+    $(basename "$0") -s localhost:5559
+USAGE
+}
+
+SERIAL=""
+
+while getopts "s:h" opt; do
+    case $opt in
+        s) SERIAL="$OPTARG" ;;
+        h) show_usage; exit 0 ;;
+        \?) echo "Error: Invalid option: -$OPTARG. Use -h for help." >&2; exit 1 ;;
+    esac
+done
+
+if [ -z "$SERIAL" ]; then
+    IFS=$'\n' read -r -d '' -a DEVICES < <(adb devices | awk 'NR>1 && $2=="device" {print $1}' && printf '\0')
+    if [ ${#DEVICES[@]} -eq 0 ]; then
+        echo "Error: 未检测到已连接的设备。" >&2
+        exit 1
+    elif [ ${#DEVICES[@]} -eq 1 ]; then
+        SERIAL="${DEVICES[0]}"
+        echo "已自动选择设备: $SERIAL"
+    else
+        echo "检测到多个设备，请选择："
+        for i in "${!DEVICES[@]}"; do
+            echo "  $((i+1))) ${DEVICES[$i]}"
+        done
+        while true; do
+            read -rp "请输入序号 [1-${#DEVICES[@]}]: " choice
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#DEVICES[@]}" ]; then
+                SERIAL="${DEVICES[$((choice-1))]}"
+                break
+            fi
+            echo "无效输入，请重试。"
+        done
+        echo "已选择设备: $SERIAL"
+    fi
+fi
+
+set -e
+
+echo "[adb-remount] root..."
+adb -s "$SERIAL" root
+
+echo "[adb-remount] remount..."
+adb -s "$SERIAL" remount
+
+echo "[adb-remount] 完成。"

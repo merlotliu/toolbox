@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# adb-remount uninstall - remove adb-remount configuration
+#
+
+echo "[adb-remount] uninstall: nothing to remove."

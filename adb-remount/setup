@@ -1,0 +1,7 @@
+#!/bin/bash
+
+#
+# adb-remount setup - initialize adb-remount configuration
+#
+
+echo "[adb-remount] setup: nothing to configure."
