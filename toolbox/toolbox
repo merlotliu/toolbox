@@ -19,13 +19,14 @@ Usage: $(basename "$0") OPTION [ARGS]
 OPTIONS:
     --list              List all tools with installation status
     --setup             Run the repository setup script
-    --install <tool>    Install a specific tool
-    --uninstall <tool>  Uninstall a specific tool
+    --install <tool>... Install one or more tools
+    --uninstall <tool>... Uninstall one or more tools
     -h, --help          Show this help message
 
 EXAMPLES:
     toolbox --list
     toolbox --install dbfetch
+    toolbox --install adb-remount adb-shell
     toolbox --uninstall dbfetch
 USAGE
 }
@@ -110,12 +111,14 @@ case "$1" in
         exec "$REPO_DIR/setup" "${@:2}"
         ;;
     --install)
-        [ -z "$2" ] && { echo "Error: --install requires a tool name." >&2; exit 1; }
-        cmd_install "$2"
+        [ -z "$2" ] && { echo "Error: --install requires at least one tool name." >&2; exit 1; }
+        shift
+        for tool in "$@"; do cmd_install "$tool"; done
         ;;
     --uninstall)
-        [ -z "$2" ] && { echo "Error: --uninstall requires a tool name." >&2; exit 1; }
-        cmd_uninstall "$2"
+        [ -z "$2" ] && { echo "Error: --uninstall requires at least one tool name." >&2; exit 1; }
+        shift
+        for tool in "$@"; do cmd_uninstall "$tool"; done
         ;;
     -h|--help)
         show_usage
