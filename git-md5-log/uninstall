@@ -1,0 +1,3 @@
+#!/bin/bash
+
+echo "[git-md5-log] uninstall: nothing to remove."
