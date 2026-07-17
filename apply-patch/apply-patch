@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+
+import argparse
+import hashlib
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def md5sum(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hr():
+    print("-" * 150)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Apply a patch directory onto a local tree and create a git commit."
+    )
+    parser.add_argument("-s", "--source", required=True, help="patch directory")
+    parser.add_argument("-d", "--dest", required=True, help="local directory")
+    parser.add_argument("--skip-new", action="store_true", help="skip files absent in dest")
+    parser.add_argument(
+        "--only-check",
+        "--check-only",
+        action="store_true",
+        dest="only_check",
+        help="compare corresponding files only; do not modify anything",
+    )
+    parser.add_argument("-y", "--yes", action="store_true", help="skip confirmation prompt")
+    return parser.parse_args()
+
+
+def collect_patch_files(patch_root: Path):
+    return sorted(path for path in patch_root.rglob("*") if path.is_file())
+
+
+def classify_files(patch_root: Path, dest_root: Path, skip_new: bool):
+    total_same = total_diff = total_new = 0
+    changed = []
+
+    print("========================================")
+    print(" STEP 1: PRE-APPLY CHECK")
+    print("========================================")
+    print("(showing only files that differ or are absent in dest)")
+    print()
+    print(f"{'STATUS':<8}  {'File (relative to dest root)':<60}  {'MD5 (patch)':<34}  MD5 (dest)")
+    hr()
+
+    for patch_file in collect_patch_files(patch_root):
+        rel = patch_file.relative_to(patch_root)
+        dest_file = dest_root / rel
+        patch_md5 = md5sum(patch_file)
+
+        if not dest_file.exists():
+            total_new += 1
+            if skip_new:
+                print(f"{'SKIP':<8}  {str(rel):<60}  {patch_md5:<34}  (absent, --skip-new)")
+            else:
+                print(f"{'NEW':<8}  {str(rel):<60}  {patch_md5:<34}  (absent)")
+                changed.append((patch_file, dest_file, rel))
+            continue
+
+        dest_md5 = md5sum(dest_file)
+        if patch_md5 == dest_md5:
+            total_same += 1
+            continue
+
+        total_diff += 1
+        print(f"{'DIFF':<8}  {str(rel):<60}  {patch_md5:<34}  {dest_md5}")
+        changed.append((patch_file, dest_file, rel))
+
+    hr()
+    total = total_same + total_diff + total_new
+    print(f"  same={total_same}  diff={total_diff}  new={total_new}  total={total}")
+    print()
+    return changed
+
+
+def confirm_apply(dest_root: Path, count: int, yes: bool):
+    if yes:
+        return
+    reply = input(f"Apply {count} file(s) to '{dest_root}'? [y/N] ").strip().lower()
+    if reply not in {"y", "yes"}:
+        print("Aborted.")
+        sys.exit(1)
+
+
+def copy_files(changed):
+    print("========================================")
+    print(" STEP 2: APPLYING PATCH")
+    print("========================================")
+    for patch_file, dest_file, rel in changed:
+        dest_mode = dest_file.stat().st_mode if dest_file.exists() else None
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(patch_file, dest_file)
+        if dest_mode is not None:
+            dest_file.chmod(dest_mode)
+        else:
+            shutil.copymode(patch_file, dest_file)
+        print(f"  cp  {rel}")
+    print()
+
+
+def post_check(patch_root: Path, dest_root: Path, skip_new: bool):
+    print("========================================")
+    print(" STEP 3: POST-APPLY CHECK")
+    print("========================================")
+    print("(verifying all patch files against dest)")
+    print()
+    print(f"{'STATUS':<8}  {'File (relative to dest root)':<60}  {'MD5 (patch)':<34}  MD5 (dest)")
+    hr()
+
+    ok_count = fail_count = skip_count = 0
+    for patch_file in collect_patch_files(patch_root):
+        rel = patch_file.relative_to(patch_root)
+        dest_file = dest_root / rel
+        patch_md5 = md5sum(patch_file)
+
+        if not dest_file.exists():
+            if skip_new:
+                skip_count += 1
+                print(f"{'SKIP':<8}  {str(rel):<60}  {patch_md5:<34}  (absent, --skip-new)")
+            else:
+                fail_count += 1
+                print(f"{'FAIL':<8}  {str(rel):<60}  {patch_md5:<34}  (absent)")
+            continue
+
+        dest_md5 = md5sum(dest_file)
+        if patch_md5 == dest_md5:
+            ok_count += 1
+            print(f"{'OK':<8}  {str(rel):<60}  {patch_md5:<34}  {dest_md5}")
+        else:
+            fail_count += 1
+            print(f"{'FAIL':<8}  {str(rel):<60}  {patch_md5:<34}  {dest_md5}")
+
+    hr()
+    print(f"Result: {ok_count} OK, {fail_count} FAILED, {skip_count} SKIPPED")
+    print()
+    if fail_count:
+        print("ERROR: post-apply check failed; aborting git commit.", file=sys.stderr)
+        sys.exit(1)
+
+
+def git_commit(dest_root: Path, changed, patch_root: Path):
+    print("========================================")
+    print(" STEP 4: GIT ADD")
+    print("========================================")
+    git_root = Path(
+        subprocess.run(
+            ["git", "-C", str(dest_root), "rev-parse", "--show-toplevel"],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+    )
+
+    git_paths = []
+    for _patch_file, dest_file, rel in changed:
+        rel_to_git = dest_file.relative_to(git_root)
+        git_paths.append(str(rel_to_git))
+        print(f"  git add {rel_to_git}")
+    subprocess.run(["git", "-C", str(git_root), "add", *git_paths], check=True)
+    print()
+
+    print("========================================")
+    print(" STEP 5: GIT COMMIT")
+    print("========================================")
+    commit_msg = f"apply patch from {patch_root.name}"
+    print(f'  git commit -m "{commit_msg}"')
+    subprocess.run(["git", "-C", str(git_root), "commit", "-m", commit_msg], check=True)
+    print()
+
+
+def main():
+    args = parse_args()
+    patch_root = Path(args.source).expanduser().resolve()
+    dest_root = Path(args.dest).expanduser().resolve()
+
+    if not patch_root.is_dir():
+        print(f"ERROR: patch dir not found: {patch_root}", file=sys.stderr)
+        return 1
+    if not dest_root.is_dir():
+        print(f"ERROR: dest dir not found: {dest_root}", file=sys.stderr)
+        return 1
+
+    print(f"Patch root : {patch_root}")
+    print(f"Dest root  : {dest_root}")
+    print(f"Skip new   : {'yes' if args.skip_new else 'no'}")
+    print()
+
+    changed = classify_files(patch_root, dest_root, args.skip_new)
+    if not changed:
+        print("No differences found. Patch is already applied.")
+        return 0
+
+    print(f"Files to be applied ({len(changed)}):")
+    for _patch_file, _dest_file, rel in changed:
+        print(f"  {rel}")
+    print()
+
+    if args.only_check:
+        print("(--only-check: skipping apply and git commit)")
+        return 0
+
+    confirm_apply(dest_root, len(changed), args.yes)
+    copy_files(changed)
+    post_check(patch_root, dest_root, args.skip_new)
+    git_commit(dest_root, changed, patch_root)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

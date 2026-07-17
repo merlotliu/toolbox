@@ -1,0 +1,4 @@
+#!/bin/bash
+# apply-patch setup - nothing to configure
+
+echo "[apply-patch] setup: nothing to configure."

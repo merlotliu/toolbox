@@ -1,0 +1,4 @@
+#!/bin/bash
+# apply-patch uninstall - nothing to remove
+
+echo "[apply-patch] uninstall: nothing to remove."
