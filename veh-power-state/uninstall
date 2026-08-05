@@ -1,0 +1,14 @@
+#!/bin/bash
+
+#
+# veh-power-state uninstall - remove veh-power-state configuration
+#
+
+CONFIG_DIR="$HOME/.config/veh-power-state"
+
+if [ -d "$CONFIG_DIR" ]; then
+    rm -rf "$CONFIG_DIR"
+    echo "[veh-power-state] removed $CONFIG_DIR"
+else
+    echo "[veh-power-state] uninstall: nothing to remove."
+fi

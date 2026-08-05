@@ -1,0 +1,152 @@
+#!/bin/bash
+
+#
+# veh-power-state - query a VIN's powermanager power-state transition
+#                    events over a time range (DIP msg-parsing service)
+#
+
+set -euo pipefail
+
+readonly CONFIG_FILE="$HOME/.config/veh-power-state/config"
+readonly API_URL="https://dip-data-msg-parsing-service.prod.k8s.chehejia.com/v1-0/msg-parsing/hu-log-files/veh-event"
+readonly EVENT_KEY="powermanager.powerstate-event.report"
+readonly PAGE_SIZE=200
+
+VIN=""
+DATE=""
+START_TIME=""
+END_TIME=""
+SIDE="all"
+JSON_OUT=0
+
+error_exit() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+show_usage() {
+    cat << USAGE
+veh-power-state - query a VIN's power-state transition events over a time range
+
+Usage: $(basename "$0") -v <VIN> (-d <YYYY-MM-DD> | -s <START> -e <END>) [OPTIONS]
+
+OPTIONS:
+    -v VIN       Vehicle VIN (required)
+    -d DATE      Query the whole day (YYYY-MM-DD), shorthand for
+                 -s "DATE 00:00:00" -e "DATE 23:59:59"
+    -s START     Start time, "YYYY-MM-DD HH:MM:SS" (used with -e)
+    -e END       End time, "YYYY-MM-DD HH:MM:SS" (used with -s)
+    --side SIDE  Filter by side: android | linux | all (default: all)
+    --json       Print raw event list as JSON instead of a table
+    -h           Show this help message
+
+Setup:
+    Requires a Bearer token (copied from the browser's request headers
+    while logged in to id.lixiang.com) stored via this tool's setup
+    script, or manually in $CONFIG_FILE as TOKEN=<jwt>.
+    The token is short-lived (~1h); re-run setup to refresh it when
+    requests start failing.
+
+EXAMPLES:
+    $(basename "$0") -v HLX33B16XT1322818 -d 2026-08-05
+    $(basename "$0") -v HLX33B16XT1322818 -s "2026-08-05 14:00:00" -e "2026-08-05 15:30:00"
+    $(basename "$0") -v HLX33B16XT1322818 -d 2026-08-05 --side android
+    $(basename "$0") -v HLX33B16XT1322818 -d 2026-08-05 --json
+USAGE
+}
+
+# ---------- argument parsing ----------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v) VIN="$2"; shift 2 ;;
+        -d) DATE="$2"; shift 2 ;;
+        -s) START_TIME="$2"; shift 2 ;;
+        -e) END_TIME="$2"; shift 2 ;;
+        --side) SIDE="$2"; shift 2 ;;
+        --json) JSON_OUT=1; shift ;;
+        -h) show_usage; exit 0 ;;
+        *) echo "Error: Unknown option: $1. Use -h for help." >&2; exit 1 ;;
+    esac
+done
+
+[ -n "$VIN" ] || error_exit "-v <VIN> is required. Use -h for help."
+
+if [ -n "$DATE" ]; then
+    START_TIME="$DATE 00:00:00"
+    END_TIME="$DATE 23:59:59"
+fi
+
+[ -n "$START_TIME" ] && [ -n "$END_TIME" ] || error_exit "Either -d <DATE> or both -s <START> and -e <END> are required."
+
+case "$SIDE" in
+    all|android|linux) ;;
+    *) error_exit "--side must be one of: all, android, linux" ;;
+esac
+
+command -v jq >/dev/null 2>&1 || error_exit "jq is required but not installed."
+
+[ -f "$CONFIG_FILE" ] || error_exit "Config not found: $CONFIG_FILE. Run '$(dirname "$0")/setup' first."
+TOKEN=$(grep -m1 '^TOKEN=' "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '\r')
+[ -n "$TOKEN" ] || error_exit "TOKEN missing in $CONFIG_FILE."
+
+# ---------- fetch (with pagination) ----------
+ALL_LIST="[]"
+PAGE=1
+TOTAL=-1
+
+while true; do
+    RESPONSE=$(curl -s -G "$API_URL" \
+        --data-urlencode "reportStartTime=$START_TIME" \
+        --data-urlencode "reportEndTime=$END_TIME" \
+        --data-urlencode "vin=$VIN" \
+        --data-urlencode "pageNum=$PAGE" \
+        --data-urlencode "pageSize=$PAGE_SIZE" \
+        --data-urlencode "eventKey=$EVENT_KEY" \
+        -H "Accept: application/json, text/plain, */*" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json")
+
+    if ! echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+        error_exit "Non-JSON response from server (token may be expired, re-run setup): $RESPONSE"
+    fi
+
+    if echo "$RESPONSE" | jq -e 'has("list") | not' >/dev/null 2>&1; then
+        error_exit "Unexpected response: $(echo "$RESPONSE" | jq -c .)"
+    fi
+
+    TOTAL=$(echo "$RESPONSE" | jq -r '.total // 0')
+    PAGE_LIST=$(echo "$RESPONSE" | jq -c '.list // []')
+    ALL_LIST=$(jq -c -n --argjson a "$ALL_LIST" --argjson b "$PAGE_LIST" '$a + $b')
+
+    FETCHED=$(echo "$ALL_LIST" | jq 'length')
+    if [ "$FETCHED" -ge "$TOTAL" ] || [ "$(echo "$PAGE_LIST" | jq 'length')" -eq 0 ]; then
+        break
+    fi
+    PAGE=$((PAGE + 1))
+done
+
+# ---------- side filter ----------
+case "$SIDE" in
+    android) FILTER='(.eventData | fromjson | .entity | test("^Android:"))' ;;
+    linux)   FILTER='(.eventData | fromjson | .entity | test("^Linux:"))' ;;
+    all)     FILTER='true' ;;
+esac
+
+FILTERED=$(echo "$ALL_LIST" | jq -c "[.[] | select($FILTER)]")
+
+if [ "$JSON_OUT" -eq 1 ]; then
+    echo "$FILTERED" | jq '[.[] | {createTime, side: (.eventData | fromjson | .entity | split(":")[0]), transition: (.eventData | fromjson | .entity | split(":")[1])}] | sort_by(.createTime)'
+    exit 0
+fi
+
+echo "VIN: $VIN  range: [$START_TIME, $END_TIME]  side: $SIDE  events: $(echo "$FILTERED" | jq 'length')"
+printf "%-20s %-8s %s\n" "TIME" "SIDE" "TRANSITION"
+echo "$FILTERED" | jq -r '
+    [.[] | {
+        createTime,
+        side: (.eventData | fromjson | .entity | split(":")[0]),
+        transition: (.eventData | fromjson | .entity | split(":")[1])
+    }]
+    | sort_by(.createTime)
+    | .[] | [.createTime, .side, .transition] | @tsv' \
+| awk -F'\t' '{printf "%-20s %-8s %s\n", $1, $2, $3}'

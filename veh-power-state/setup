@@ -1,0 +1,32 @@
+#!/bin/bash
+
+#
+# veh-power-state setup - initialize veh-power-state configuration
+#
+
+CONFIG_FILE="$HOME/.config/veh-power-state/config"
+
+if [ -f "$CONFIG_FILE" ]; then
+    read -rp "  Config already exists: $CONFIG_FILE. Overwrite? [y/N] " confirm
+    case "$confirm" in
+        y|Y) ;;
+        *) echo "  Skipped."; exit 0 ;;
+    esac
+fi
+
+echo "  Paste the 'Authorization: Bearer <token>' value captured from a"
+echo "  browser request to dip-data-msg-parsing-service (id.lixiang.com session)."
+read -rp "  Bearer token: " token
+
+if [ -z "$token" ]; then
+    echo "  Error: token cannot be empty." >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$CONFIG_FILE")"
+cat > "$CONFIG_FILE" << EOF
+TOKEN=$token
+EOF
+chmod 600 "$CONFIG_FILE"
+echo "  Config saved: $CONFIG_FILE"
+echo "  Note: this token is short-lived (~1h); re-run setup to refresh it."
