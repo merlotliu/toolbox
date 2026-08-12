@@ -1,0 +1,14 @@
+#!/bin/bash
+
+#
+# veh-platform uninstall - remove veh-platform configuration
+#
+
+readonly CONFIG_DIR="$HOME/.config/veh-platform"
+
+if [ -d "$CONFIG_DIR" ]; then
+    rm -rf "$CONFIG_DIR"
+    echo "[veh-platform] uninstall: removed $CONFIG_DIR"
+else
+    echo "[veh-platform] uninstall: nothing to remove."
+fi

@@ -1,0 +1,106 @@
+#!/bin/bash
+
+#
+# veh-platform - Query vehicle platform/chip (e.g. SS2/SS3/SS4) by VIN
+#
+
+readonly CONFIG_FILE="$HOME/.config/veh-platform/default.conf"
+readonly API_URL="https://api-hmi-default-private-front.chehejia.com/ssp-vcs-service/v2-0/vehicles/get"
+
+GWTOKEN=""
+RAW=0
+
+error_exit() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+show_usage() {
+    cat << USAGE
+veh-platform - Query vehicle platform/chip (e.g. SS2/SS3/SS4) by VIN
+
+Usage: $(basename "$0") -v <VIN> [OPTIONS]
+
+OPTIONS:
+    -v VIN    Vehicle VIN to query (required)
+    -r        Print full raw JSON response instead of just the platform summary
+    -h        Show this help message
+
+EXAMPLES:
+    $(basename "$0") -v HLX33B120T2705626
+    $(basename "$0") -v HLX33B120T2705626 -r
+USAGE
+}
+
+load_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error_exit "Config file not found: $CONFIG_FILE
+Run 'veh-platform/setup' first to configure the x-chj-gwtoken."
+    fi
+
+    GWTOKEN=$(grep "CHJ_GWTOKEN=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d '\r')
+
+    if [ -z "$GWTOKEN" ]; then
+        error_exit "CHJ_GWTOKEN not found in config file: $CONFIG_FILE"
+    fi
+}
+
+VIN=""
+
+while getopts "v:rh" opt; do
+    case $opt in
+        v) VIN="$OPTARG" ;;
+        r) RAW=1 ;;
+        h) show_usage; exit 0 ;;
+        \?) echo "Error: Invalid option: -$OPTARG. Use -h for help." >&2; exit 1 ;;
+    esac
+done
+
+[ -z "$VIN" ] && { show_usage; exit 1; }
+
+load_config
+
+RESPONSE=$(curl -s "${API_URL}/${VIN}?types=BASE,CAMERA,DEVICE,MOTOR,BATTERY,PRODUCTION,MODEL,MATERIAL,KEY,SALE,CONFIG-CODE" \
+    -H 'accept: application/json, text/plain, */*' \
+    -H 'cache-control: no-cache' \
+    -H 'origin: https://ssp-vehcloud-web.prod.k8s.chehejia.com' \
+    -H 'referer: https://ssp-vehcloud-web.prod.k8s.chehejia.com/' \
+    -H "x-chj-gwtoken: ${GWTOKEN}" \
+    -H "x-chj-vin: ${VIN}" \
+    -H 'x-requested-with: XMLHttpRequest')
+
+if [ -z "$RESPONSE" ]; then
+    error_exit "Empty response from server."
+fi
+
+if [ "$RAW" -eq 1 ]; then
+    if command -v jq >/dev/null 2>&1; then
+        echo "$RESPONSE" | jq -M .
+    else
+        echo "$RESPONSE"
+    fi
+    exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+    error_exit "jq is required for the default summary output. Install jq, or use -r for raw output."
+fi
+
+VEH_PLATFORM=$(echo "$RESPONSE" | jq -r '.data.configCode.configCodeInfo.vehPlatform? // empty')
+VEH_PROJECT=$(echo "$RESPONSE" | jq -r '.data.model.vehProject? // empty')
+SERIES_DESC=$(echo "$RESPONSE" | jq -r '.data.model.seriesDesc? // empty')
+VARIABLE_MODEL_DESC=$(echo "$RESPONSE" | jq -r '.data.model.variableModelDesc? // empty')
+HARD_PLATFORM=$(echo "$RESPONSE" | jq -r '.data.device.hardPlatform? // empty')
+
+if [ -z "$VEH_PLATFORM" ]; then
+    echo "Warning: vehPlatform field not found in response. Use -r to inspect raw JSON." >&2
+    echo "$RESPONSE" | (command -v jq >/dev/null 2>&1 && jq . || cat)
+    exit 1
+fi
+
+echo "VIN:            $VIN"
+[ -n "$SERIES_DESC" ] && echo "series:         $SERIES_DESC"
+[ -n "$VEH_PROJECT" ] && echo "vehProject:     $VEH_PROJECT"
+[ -n "$HARD_PLATFORM" ] && echo "hardPlatform:   $HARD_PLATFORM"
+echo "vehPlatform:    $VEH_PLATFORM"
+[ -n "$VARIABLE_MODEL_DESC" ] && echo "variableModel:  $VARIABLE_MODEL_DESC"

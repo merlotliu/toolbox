@@ -1,0 +1,8 @@
+#!/bin/bash
+
+#
+# gerrit-query setup - initialize gerrit-query configuration
+#
+
+echo "[gerrit-query] setup: run 'gerrit-query --setup' to configure cookies."
+echo "[gerrit-query] setup: config file: ~/.config/gerrit-query/config"

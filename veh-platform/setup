@@ -1,0 +1,35 @@
+#!/bin/bash
+
+#
+# veh-platform setup - configure the x-chj-gwtoken used to query vehicle info
+#
+
+set -e
+
+readonly CONFIG_DIR="$HOME/.config/veh-platform"
+readonly CONFIG_FILE="$CONFIG_DIR/default.conf"
+
+mkdir -p "$CONFIG_DIR"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Config file already exists: $CONFIG_FILE"
+    read -r -p "Overwrite? [y/N] " ans
+    case "$ans" in
+        [yY]*) ;;
+        *) echo "Keeping existing config."; exit 0 ;;
+    esac
+fi
+
+read -r -p "x-chj-gwtoken: " GWTOKEN
+
+if [ -z "$GWTOKEN" ]; then
+    echo "Error: gwtoken cannot be empty." >&2
+    exit 1
+fi
+
+cat > "$CONFIG_FILE" << EOF
+CHJ_GWTOKEN=$GWTOKEN
+EOF
+chmod 600 "$CONFIG_FILE"
+
+echo "[veh-platform] setup: config written to $CONFIG_FILE"

@@ -1,0 +1,211 @@
+#!/bin/bash
+
+#
+# gerrit-query - Query Gerrit Code Review REST API
+#
+# Queries gerrit.it.chehejia.com (or a custom server) for changes by topic,
+# change-ID, or arbitrary query string.  Authentication is via GerritAccount
+# and XSRF_TOKEN cookies stored in ~/.config/gerrit-query/config.
+#
+# Dependencies: curl, jq
+#
+
+set -euo pipefail
+
+readonly CONFIG_DIR="$HOME/.config/gerrit-query"
+readonly CONFIG_FILE="$CONFIG_DIR/config"
+readonly DEFAULT_OPTIONS="5000081"
+readonly DEFAULT_LIMIT="25"
+readonly DEFAULT_GERRIT_URL="https://gerrit.it.chehejia.com"
+
+# -------------------------------------------------------------------
+# Help
+# -------------------------------------------------------------------
+show_usage() {
+    cat <<'USAGE'
+gerrit-query - Query Gerrit Code Review REST API
+
+Usage:
+    gerrit-query -t <topic>              # Search by topic
+    gerrit-query -c <change-id>           # Get details of a specific change
+    gerrit-query -q <query-string>        # Raw Gerrit query
+    gerrit-query --setup                  # Interactive cookie configuration
+
+Options:
+    -t, --topic <topic>     Search changes by topic name
+    -c, --change <id>       Get details of a specific change (numeric ID or
+                            Change-Id hash)
+    -q, --query <string>    Arbitrary Gerrit query (overrides -t/-c)
+    -O, --options <mask>    Gerrit options bitmask (default: 5000081)
+    -n, --limit <count>     Max results (default: 25)
+    -s, --start <index>     Start at this result index (default: 0)
+    -j, --raw-json          Output raw JSON (without jq formatting)
+    -u, --url <url>         Gerrit server URL (default: from config or
+                            https://gerrit.it.chehejia.com)
+    --setup                 Interactive setup for cookie configuration
+    -h, --help              Show this help
+
+Config file: ~/.config/gerrit-query/config
+
+Examples:
+    gerrit-query -t "update_8387_qcom_baseline-ES2-AW-to-MASTER-update"
+    gerrit-query -c 12345
+    gerrit-query -q "topic:my-topic AND status:open"
+    gerrit-query -q "owner:self" -n 50 -j
+USAGE
+}
+
+# -------------------------------------------------------------------
+# Config loading
+# -------------------------------------------------------------------
+load_config() {
+    GERRIT_URL="$DEFAULT_GERRIT_URL"
+    GERRIT_ACCOUNT_COOKIE=""
+    XSRF_TOKEN=""
+
+    if [ -f "$CONFIG_FILE" ]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+    fi
+}
+
+# -------------------------------------------------------------------
+# Interactive setup
+# -------------------------------------------------------------------
+do_setup() {
+    mkdir -p "$CONFIG_DIR"
+
+    echo "=== gerrit-query setup ==="
+    echo ""
+    echo "You need a GerritAccount cookie and an XSRF_TOKEN cookie."
+    echo "To obtain them:"
+    echo "  1. Log in to Gerrit in your browser"
+    echo "  2. Open DevTools → Application → Cookies → gerrit.it.chehejia.com"
+    echo "  3. Copy the values for GerritAccount and XSRF_TOKEN"
+    echo ""
+
+    read -rp "Gerrit server URL [${DEFAULT_GERRIT_URL}]: " input_url
+    GERRIT_URL="${input_url:-$DEFAULT_GERRIT_URL}"
+
+    read -rp "GerritAccount cookie value: " GERRIT_ACCOUNT_COOKIE
+    if [ -z "$GERRIT_ACCOUNT_COOKIE" ]; then
+        echo "Error: GerritAccount cookie is required." >&2
+        exit 1
+    fi
+
+    read -rp "XSRF_TOKEN cookie value: " XSRF_TOKEN
+    if [ -z "$XSRF_TOKEN" ]; then
+        echo "Error: XSRF_TOKEN cookie is required." >&2
+        exit 1
+    fi
+
+    cat > "$CONFIG_FILE" <<EOF
+# gerrit-query configuration
+# Created: $(date)
+GERRIT_URL="${GERRIT_URL}"
+GERRIT_ACCOUNT_COOKIE="${GERRIT_ACCOUNT_COOKIE}"
+XSRF_TOKEN="${XSRF_TOKEN}"
+EOF
+    chmod 600 "$CONFIG_FILE"
+
+    echo ""
+    echo "Configuration saved to $CONFIG_FILE (chmod 600)."
+    echo "Run 'gerrit-query -t <topic>' to test."
+}
+
+# -------------------------------------------------------------------
+# Gerrit API request
+# -------------------------------------------------------------------
+gerrit_request() {
+    local url="$1"
+    local cookie_header="GerritAccount=${GERRIT_ACCOUNT_COOKIE}; XSRF_TOKEN=${XSRF_TOKEN}"
+
+    curl -s \
+        --url "$url" \
+        -H 'accept: */*' \
+        -H 'accept-language: zh-CN,zh;q=0.9' \
+        -H 'cache-control: no-cache' \
+        -H "cookie: ${cookie_header}" \
+        -H 'pragma: no-cache' \
+        -H 'sec-fetch-dest: empty' \
+        -H 'sec-fetch-mode: cors' \
+        -H 'sec-fetch-site: same-origin'
+}
+
+# -------------------------------------------------------------------
+# Main
+# -------------------------------------------------------------------
+main() {
+    local topic=""
+    local change_id=""
+    local raw_query=""
+    local options="$DEFAULT_OPTIONS"
+    local limit="$DEFAULT_LIMIT"
+    local start=0
+    local raw_json=false
+
+    # Parse options
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help) show_usage; exit 0 ;;
+            --setup) do_setup; exit 0 ;;
+            -t|--topic) topic="$2"; shift 2 ;;
+            -c|--change) change_id="$2"; shift 2 ;;
+            -q|--query) raw_query="$2"; shift 2 ;;
+            -O|--options) options="$2"; shift 2 ;;
+            -n|--limit) limit="$2"; shift 2 ;;
+            -s|--start) start="$2"; shift 2 ;;
+            -j|--raw-json) raw_json=true; shift ;;
+            -u|--url) GERRIT_URL="$2"; shift 2 ;;
+            --) shift; break ;;
+            *) echo "Error: Unknown option: $1" >&2; show_usage >&2; exit 1 ;;
+        esac
+    done
+
+    load_config
+
+    # Build query
+    local query=""
+    if [ -n "$raw_query" ]; then
+        query="$raw_query"
+    elif [ -n "$topic" ]; then
+        query="topic:%22${topic}%22"
+    elif [ -n "$change_id" ]; then
+        query="${change_id}"
+    else
+        echo "Error: specify --topic, --change, or --query" >&2
+        show_usage >&2
+        exit 1
+    fi
+
+    # Validate credentials
+    if [ -z "$GERRIT_ACCOUNT_COOKIE" ] || [ -z "$XSRF_TOKEN" ]; then
+        echo "Error: Gerrit cookies not configured." >&2
+        echo "Run 'gerrit-query --setup' to configure." >&2
+        exit 1
+    fi
+
+    # Build URL
+    local api_url
+    if [ -n "$change_id" ] && [ -z "$raw_query" ]; then
+        # Single change detail
+        api_url="${GERRIT_URL}/changes/${query}?O=${options}"
+    else
+        api_url="${GERRIT_URL}/changes/?O=${options}&S=${start}&n=${limit}&q=${query}&allow-incomplete-results=true"
+    fi
+
+    # Execute
+    local response
+    response="$(gerrit_request "$api_url")"
+
+    # Strip Gerrit's XSSI prefix and output
+    if [ "$raw_json" = true ]; then
+        echo "$response" | sed '1s/^)]}'\''//'
+    else
+        echo "$response" | sed '1s/^)]}'\''//' | jq '.' 2>/dev/null || {
+            echo "$response" | sed '1s/^)]}'\''//'
+        }
+    fi
+}
+
+main "$@"
